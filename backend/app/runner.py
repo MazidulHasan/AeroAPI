@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from sqlalchemy.orm import Session
@@ -87,6 +87,8 @@ async def execute_one(
 
 
 def build_url(base_url: str | None, path: str) -> str:
+    if urlparse(path).scheme in {"http", "https"}:
+        return path
     if not base_url:
         return path
     return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))

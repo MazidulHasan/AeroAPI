@@ -82,6 +82,9 @@ class TestRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
+    collection: Mapped[Collection] = relationship()
+    project: Mapped[Project] = relationship()
+
 
 class GeneratedTest(Base):
     __tablename__ = "generated_tests"

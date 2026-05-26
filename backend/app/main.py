@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app import models
-from app.collections import parse_collection, parse_environment, parse_json_bytes
+from app.collections import find_base_url, parse_collection, parse_environment, parse_json_bytes
 from app.database import get_db, init_db
 from app.jobs import cancel_run, execute_run
 from app.reports import collect_results, render_csv_report, render_html_report, send_slack_alert
@@ -37,7 +37,7 @@ def startup() -> None:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "service": "AeroAPI"}
+    return {"ok": True, "service": "AeroAPI", "generation_fallback": True}
 
 
 @app.post("/api/collections/upload", response_model=CollectionUploadResponse)
@@ -50,14 +50,17 @@ async def upload_collection(
     collection_json = parse_json_bytes(raw, "collection")
     env_json = parse_json_bytes(await env_file.read(), "environment") if env_file else None
     env_vars = parse_environment(env_json)
-    name, endpoints, variables = parse_collection(collection_json)
+    name, endpoints, variables = parse_collection(collection_json, env_vars)
+    merged_variables = variables | env_vars
     project = ensure_project(db)
+    if not project.base_url:
+        project.base_url = find_base_url(merged_variables)
     collection = models.Collection(
         project_id=project.id,
         name=name,
         raw_json=json.dumps(collection_json),
         env_json=json.dumps(env_json) if env_json else None,
-        parsed_summary=json.dumps({"endpoint_count": len(endpoints), "variables": variables | env_vars}),
+        parsed_summary=json.dumps({"endpoint_count": len(endpoints), "variables": merged_variables, "base_url": project.base_url}),
     )
     db.add(collection)
     db.commit()
@@ -88,7 +91,7 @@ async def upload_collection(
         name=name,
         endpoint_count=len(endpoints),
         endpoints=endpoints,
-        variables=variables | env_vars,
+        variables=merged_variables,
     )
 
 

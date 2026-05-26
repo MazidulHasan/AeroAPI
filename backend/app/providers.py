@@ -1,4 +1,6 @@
+import asyncio
 import json
+import re
 from abc import ABC, abstractmethod
 
 import httpx
@@ -32,6 +34,10 @@ Endpoint:
     @abstractmethod
     async def generate_tests(self, endpoint: EndpointSummary, intensity: str) -> dict:
         raise NotImplementedError
+
+
+class ProviderRateLimitError(RuntimeError):
+    pass
 
 
 class DeterministicProvider(LLMProvider):
@@ -133,7 +139,10 @@ class GroqProvider(DeterministicProvider):
         demo = await self.maybe_demo(endpoint, intensity)
         if demo:
             return demo
-        return await openai_compatible_chat("https://api.groq.com/openai/v1", self.model, self.api_token, self.prompt(endpoint, intensity))
+        try:
+            return await openai_compatible_chat("https://api.groq.com/openai/v1", self.model, self.api_token, self.prompt(endpoint, intensity))
+        except (json.JSONDecodeError, ProviderRateLimitError):
+            return await DeterministicProvider(self.model, self.api_token, self.custom_base_url).generate_tests(endpoint, intensity)
 
 
 class ClaudeProvider(DeterministicProvider):
@@ -216,12 +225,12 @@ async def openai_compatible_chat(base_url: str, model: str, api_token: str, prom
         if "api.groq.com" in base_url and model.startswith("qwen/"):
             payload["reasoning_format"] = "hidden"
 
-        response = await client.post(url, headers=headers, json=payload)
+        response = await post_with_rate_limit_retries(client, url, headers, payload)
         if response.status_code == 400 and payload.get("response_format") == {"type": "json_object"}:
             # Some Groq models can reject JSON Object Mode for a given generation.
             # The prompt still asks for strict JSON, so retry once and parse locally.
             payload.pop("response_format")
-            response = await client.post(url, headers=headers, json=payload)
+            response = await post_with_rate_limit_retries(client, url, headers, payload)
     raise_for_status_with_detail(response)
     content = response.json()["choices"][0]["message"]["content"]
     try:
@@ -259,10 +268,36 @@ async def repair_model_json(url: str, headers: dict, original_payload: dict, mal
             "temperature": 0,
         }
     )
+    if original_payload.get("response_format"):
+        repair_payload["response_format"] = original_payload["response_format"]
     async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(url, headers=headers, json=repair_payload)
+        response = await post_with_rate_limit_retries(client, url, headers, repair_payload)
     raise_for_status_with_detail(response)
     return response.json()["choices"][0]["message"]["content"]
+
+
+async def post_with_rate_limit_retries(client: httpx.AsyncClient, url: str, headers: dict, payload: dict) -> httpx.Response:
+    response = await client.post(url, headers=headers, json=payload)
+    for _ in range(2):
+        if response.status_code != 429:
+            return response
+        retry_after = parse_retry_after(response)
+        await asyncio.sleep(min(retry_after, 8))
+        response = await client.post(url, headers=headers, json=payload)
+    return response
+
+
+def parse_retry_after(response: httpx.Response) -> float:
+    header_value = response.headers.get("retry-after")
+    if header_value:
+        try:
+            return float(header_value)
+        except ValueError:
+            pass
+    match = re.search(r"try again in ([0-9.]+)s", response.text, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return 5.0
 
 
 def raise_for_status_with_detail(response: httpx.Response) -> None:
@@ -277,7 +312,10 @@ def raise_for_status_with_detail(response: httpx.Response) -> None:
                 detail = error["message"]
         except ValueError:
             pass
-        raise RuntimeError(f"{response.status_code} {response.reason_phrase}: {detail}") from exc
+        message = f"{response.status_code} {response.reason_phrase}: {detail}"
+        if response.status_code == 429:
+            raise ProviderRateLimitError(message) from exc
+        raise RuntimeError(message) from exc
 
 
 def parse_model_json(text: str) -> dict:

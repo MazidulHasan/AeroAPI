@@ -3,7 +3,7 @@ import json
 from sqlalchemy.orm import Session
 
 from app import models
-from app.providers import get_provider
+from app.providers import DeterministicProvider, get_provider
 from app.schemas import EndpointSummary
 
 
@@ -32,7 +32,12 @@ async def generate_for_endpoint(
         params=json.loads(endpoint.params_json),
         body=json.loads(endpoint.body_json),
     )
-    generated = await provider.generate_tests(endpoint_summary, intensity)
+    used_fallback = False
+    try:
+        generated = await provider.generate_tests(endpoint_summary, intensity)
+    except json.JSONDecodeError:
+        used_fallback = True
+        generated = await DeterministicProvider(model, api_token, custom_base_url).generate_tests(endpoint_summary, intensity)
     tests = validate_generated_tests(generated)
     rows = []
     for item in tests:
@@ -45,7 +50,7 @@ async def generate_for_endpoint(
             severity=item["severity"],
             request_override_json=json.dumps(item["request"]),
             expected_behavior=expected.get("behavior", ""),
-            ai_reasoning=item["reasoning"],
+            ai_reasoning=f"{item['reasoning']} Provider returned malformed JSON, so AeroAPI used local deterministic generation." if used_fallback else item["reasoning"],
         )
         db.add(row)
         rows.append(row)
