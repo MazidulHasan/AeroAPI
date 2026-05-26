@@ -70,6 +70,7 @@ class TestRun(Base):
     stage: Mapped[str] = mapped_column(String(64), default="queued")
     provider: Mapped[str] = mapped_column(String(64))
     model: Mapped[str] = mapped_column(String(255))
+    api_docs: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_endpoints: Mapped[int] = mapped_column(Integer, default=0)
     total_tests: Mapped[int] = mapped_column(Integer, default=0)
     completed_tests: Mapped[int] = mapped_column(Integer, default=0)

@@ -31,7 +31,7 @@ export default async function DashboardPage() {
           <h1 className="text-2xl font-semibold text-ink">Dashboard</h1>
           <p className="mt-1 text-sm text-slate-600">Recent API test activity and security signal.</p>
         </div>
-        <Link href="/new-run" className="inline-flex items-center gap-2 rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">
+        <Link href="/new-run" className="inline-flex items-center gap-2 rounded bg-gradient-to-r from-slate-950 to-sky-900 px-4 py-2 text-sm font-medium text-white transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(14,165,233,0.28)]">
           New run <ArrowUpRight size={16} />
         </Link>
       </div>
@@ -63,7 +63,7 @@ export default async function DashboardPage() {
               {runs.length === 0 ? (
                 <tr><td className="px-4 py-6 text-slate-500" colSpan={6}>No runs yet. Start with a Postman collection.</td></tr>
               ) : runs.map((run) => (
-                <tr key={run.id} className="border-t border-line">
+                <tr key={run.id} className="border-t border-line transition duration-150 hover:bg-sky-50/70">
                   <td className="px-4 py-3"><Link href={`/runs/${run.id}`} className="font-medium text-ink hover:underline">#{run.id}</Link></td>
                   <td className="px-4 py-3">{run.provider} / {run.model}</td>
                   <td className="px-4 py-3"><StatusBadge value={run.status} /></td>
@@ -78,7 +78,7 @@ export default async function DashboardPage() {
       </section>
 
       {latest && (
-        <section className="rounded border border-line bg-white p-4 shadow-soft">
+        <section className="rounded border border-line bg-white p-4 shadow-soft transition duration-200 hover:border-sky-200 hover:shadow-[0_14px_32px_rgba(14,165,233,0.12)]">
           <div className="text-sm font-semibold text-ink">Active context</div>
           <p className="mt-1 text-sm text-slate-600">Latest run #{latest.id} is {latest.stage} with {latest.total_endpoints} endpoint(s) discovered.</p>
         </section>
@@ -89,8 +89,8 @@ export default async function DashboardPage() {
 
 function Metric({ icon, label, value, accent }: { icon: ReactNode; label: string; value: number; accent: string }) {
   return (
-    <div className="rounded border border-line bg-white p-4 shadow-soft">
-      <div className={`mb-3 ${accent}`}>{icon}</div>
+    <div className="rounded border border-line bg-white p-4 shadow-soft transition duration-200 hover:-translate-y-1 hover:border-sky-200 hover:shadow-[0_16px_34px_rgba(14,165,233,0.14)]">
+      <div className={`mb-3 transition duration-200 ${accent}`}>{icon}</div>
       <div className="text-2xl font-semibold text-ink">{value}</div>
       <div className="text-sm text-slate-500">{label}</div>
     </div>

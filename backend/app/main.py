@@ -3,14 +3,14 @@ import json
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app import models
 from app.collections import find_base_url, parse_collection, parse_environment, parse_json_bytes
 from app.database import get_db, init_db
 from app.jobs import cancel_run, execute_run
-from app.reports import collect_results, render_csv_report, render_html_report, send_slack_alert
+from app.reports import collect_results, render_csv_report, render_html_report, render_postman_collection, send_slack_alert
 from app.schemas import CollectionUploadResponse, EndpointSummary, ResultRow, RunCreate, RunSummary
 
 
@@ -105,6 +105,7 @@ async def create_run(payload: RunCreate, background_tasks: BackgroundTasks, db: 
         collection_id=collection.id,
         provider=payload.provider,
         model=payload.model,
+        api_docs=payload.api_docs,
         status="pending",
         stage="queued",
     )
@@ -116,6 +117,7 @@ async def create_run(payload: RunCreate, background_tasks: BackgroundTasks, db: 
         run.id,
         payload.api_token,
         payload.base_url_override,
+        payload.api_docs,
         payload.test_intensity,
         payload.timeout_seconds,
         payload.concurrency,
@@ -224,6 +226,16 @@ def export_csv(run_id: int, db: Session = Depends(get_db)) -> PlainTextResponse:
     if not db.get(models.TestRun, run_id):
         raise HTTPException(status_code=404, detail="Run not found")
     return PlainTextResponse(render_csv_report(db, run_id), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=aeroapi-run-{run_id}.csv"})
+
+
+@app.get("/api/runs/{run_id}/export/postman")
+def export_postman(run_id: int, db: Session = Depends(get_db)) -> JSONResponse:
+    if not db.get(models.TestRun, run_id):
+        raise HTTPException(status_code=404, detail="Run not found")
+    return JSONResponse(
+        render_postman_collection(db, run_id),
+        headers={"Content-Disposition": f"attachment; filename=aeroapi-run-{run_id}.postman_collection.json"},
+    )
 
 
 @app.post("/api/runs/{run_id}/slack")

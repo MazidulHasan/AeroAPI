@@ -17,6 +17,7 @@ async def generate_for_endpoint(
     provider_name: str,
     model: str,
     api_token: str,
+    api_docs: str | None,
     intensity: str,
     custom_base_url: str | None,
 ) -> list[models.GeneratedTest]:
@@ -34,7 +35,7 @@ async def generate_for_endpoint(
     )
     used_fallback = False
     try:
-        generated = await provider.generate_tests(endpoint_summary, intensity)
+        generated = await provider.generate_tests(endpoint_summary, intensity, api_docs)
     except json.JSONDecodeError:
         used_fallback = True
         generated = await DeterministicProvider(model, api_token, custom_base_url).generate_tests(endpoint_summary, intensity)
@@ -49,7 +50,7 @@ async def generate_for_endpoint(
             category=item["category"],
             severity=item["severity"],
             request_override_json=json.dumps(item["request"]),
-            expected_behavior=expected.get("behavior", ""),
+            expected_behavior=json.dumps(expected),
             ai_reasoning=f"{item['reasoning']} Provider returned malformed JSON, so AeroAPI used local deterministic generation." if used_fallback else item["reasoning"],
         )
         db.add(row)

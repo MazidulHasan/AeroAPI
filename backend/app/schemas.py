@@ -26,6 +26,7 @@ class RunCreate(BaseModel):
     provider: str
     model: str
     api_token: str = Field(min_length=1)
+    api_docs: str | None = None
     base_url_override: str | None = None
     test_intensity: str = "standard"
     timeout_seconds: int = Field(default=20, ge=1, le=120)

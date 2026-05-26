@@ -22,6 +22,7 @@ async def execute_run(
     run_id: int,
     api_token: str,
     base_url_override: str | None,
+    api_docs: str | None,
     intensity: str,
     timeout_seconds: int,
     concurrency: int,
@@ -56,6 +57,7 @@ async def execute_run(
                     provider_name=run.provider,
                     model=run.model,
                     api_token=api_token,
+                    api_docs=api_docs or run.api_docs,
                     intensity=intensity,
                     custom_base_url=custom_base_url,
                 )
@@ -149,7 +151,7 @@ async def generate_deterministic_for_endpoint(
             category=item["category"],
             severity=item["severity"],
             request_override_json=json.dumps(item["request"]),
-            expected_behavior=expected.get("behavior", ""),
+            expected_behavior=json.dumps(expected),
             ai_reasoning=f"{item['reasoning']} {fallback_reason} AeroAPI used local deterministic generation.",
         )
         db.add(row)

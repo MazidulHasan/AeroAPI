@@ -3,7 +3,7 @@
 import { ChangeEvent, DragEvent, FormEvent, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CheckCircle2, FileJson, KeyRound, Play, Upload } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, FileJson, FileText, KeyRound, Play, SlidersHorizontal, Upload } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
 const providerModels: Record<string, string[]> = {
@@ -26,6 +26,8 @@ export default function NewRunPage() {
   const router = useRouter();
   const [collectionFile, setCollectionFile] = useState<File | null>(null);
   const [envFile, setEnvFile] = useState<File | null>(null);
+  const [docFile, setDocFile] = useState<File | null>(null);
+  const [apiDocs, setApiDocs] = useState("");
   const [provider, setProvider] = useState("gemini");
   const [model, setModel] = useState(providerModels.gemini[0]);
   const [token, setToken] = useState("");
@@ -35,6 +37,8 @@ export default function NewRunPage() {
   const [intensity, setIntensity] = useState("standard");
   const [timeout, setTimeoutValue] = useState(20);
   const [concurrency, setConcurrency] = useState(6);
+  const [executionOpen, setExecutionOpen] = useState(false);
+  const [warningOpen, setWarningOpen] = useState(false);
   const [uploadPreview, setUploadPreview] = useState<UploadResponse | null>(null);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -43,6 +47,9 @@ export default function NewRunPage() {
     ? "border-emerald-400 bg-emerald-50 text-emerald-950 hover:border-emerald-500"
     : "border-slate-300 bg-panel hover:border-slate-500";
   const environmentStateClass = envFile
+    ? "border-emerald-400 bg-emerald-50 text-emerald-950"
+    : "border-line bg-white text-slate-700";
+  const docsStateClass = docFile || apiDocs.trim()
     ? "border-emerald-400 bg-emerald-50 text-emerald-950"
     : "border-line bg-white text-slate-700";
 
@@ -58,6 +65,15 @@ export default function NewRunPage() {
 
   function selectEnvironment(event: ChangeEvent<HTMLInputElement>) {
     setEnvFile(event.currentTarget.files?.[0] ?? null);
+  }
+
+  async function selectDocs(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0] ?? null;
+    setDocFile(file);
+    if (file) {
+      setApiDocs(await file.text());
+      setError("");
+    }
   }
 
   function dropCollection(event: DragEvent<HTMLLabelElement>) {
@@ -90,6 +106,7 @@ export default function NewRunPage() {
           provider,
           model,
           api_token: token,
+          api_docs: apiDocs.trim() || null,
           base_url_override: baseUrl || null,
           slack_webhook: slackWebhook || null,
           custom_base_url: customBaseUrl || null,
@@ -114,7 +131,7 @@ export default function NewRunPage() {
       </div>
 
       <form onSubmit={submit} className="grid grid-cols-[1.25fr_0.75fr] gap-6">
-        <section className="space-y-4 rounded border border-line bg-white p-5 shadow-soft">
+        <section className="space-y-4 rounded border border-line bg-white p-5 shadow-soft transition duration-200 hover:-translate-y-0.5 hover:border-sky-200 hover:shadow-[0_14px_32px_rgba(14,165,233,0.12)]">
           <h2 className="text-sm font-semibold text-ink">Collection</h2>
           <label
             className={`flex min-h-40 cursor-pointer flex-col items-center justify-center rounded border border-dashed px-4 py-6 text-center ${collectionStateClass}`}
@@ -133,6 +150,24 @@ export default function NewRunPage() {
             </span>
             <input className="w-56 text-xs" type="file" accept="application/json,.json" onChange={selectEnvironment} />
           </label>
+          <div className={`space-y-3 rounded border p-3 ${docsStateClass}`}>
+            <div className="flex items-center justify-between gap-3">
+              <span className="flex min-w-0 items-center gap-2 text-sm">
+                {docFile || apiDocs.trim() ? <CheckCircle2 size={17} className="shrink-0 text-emerald-600" /> : <FileText size={17} className="shrink-0" />}
+                <span className="truncate">{docFile ? docFile.name : "API docs or business rules"}</span>
+              </span>
+              <input className="w-56 text-xs" type="file" accept=".md,.txt,.json,.yaml,.yml,application/json,text/*" onChange={selectDocs} />
+            </div>
+            <textarea
+              className="min-h-28 w-full rounded border border-line bg-white px-3 py-2 text-sm text-slate-800"
+              value={apiDocs}
+              onChange={(event) => {
+                setApiDocs(event.target.value);
+                setDocFile(null);
+              }}
+              placeholder="Paste endpoint docs, roles, workflows, validation rules, error contracts, or business constraints."
+            />
+          </div>
 
           {uploadPreview && (
             <div className="rounded border border-line bg-panel p-3 text-sm">
@@ -141,7 +176,7 @@ export default function NewRunPage() {
           )}
         </section>
 
-        <section className="space-y-4 rounded border border-line bg-white p-5 shadow-soft">
+        <section className="space-y-4 rounded border border-line bg-white p-5 shadow-soft transition duration-200 hover:-translate-y-0.5 hover:border-violet-200 hover:shadow-[0_14px_32px_rgba(124,58,237,0.12)]">
           <h2 className="text-sm font-semibold text-ink">AI Provider</h2>
           <Field label="Provider">
             <select
@@ -177,37 +212,62 @@ export default function NewRunPage() {
           </Field>
         </section>
 
-        <section className="space-y-4 rounded border border-line bg-white p-5 shadow-soft">
-          <h2 className="text-sm font-semibold text-ink">Execution</h2>
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Base URL override">
-              <input className="w-full rounded border border-line px-3 py-2 text-sm" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.yourdomain.com" />
-            </Field>
-            <Field label="Slack webhook">
-              <input className="w-full rounded border border-line px-3 py-2 text-sm" value={slackWebhook} onChange={(e) => setSlackWebhook(e.target.value)} placeholder="Optional" />
-            </Field>
-            <Field label="Test intensity">
-              <select className="w-full rounded border border-line px-3 py-2 text-sm" value={intensity} onChange={(e) => setIntensity(e.target.value)}>
-                <option value="standard">Standard</option>
-                <option value="deep">Deep</option>
-              </select>
-            </Field>
-            <Field label="Timeout seconds">
-              <input className="w-full rounded border border-line px-3 py-2 text-sm" type="number" min={1} max={120} value={timeout} onChange={(e) => setTimeoutValue(Number(e.target.value))} />
-            </Field>
-            <Field label="Concurrency">
-              <input className="w-full rounded border border-line px-3 py-2 text-sm" type="number" min={1} max={25} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} />
-            </Field>
+        <section className="space-y-4 rounded border border-line bg-white p-5 shadow-soft transition duration-200 hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-[0_14px_32px_rgba(16,185,129,0.12)]">
+          <button
+            type="button"
+            onClick={() => setExecutionOpen((value) => !value)}
+            className="flex w-full items-center justify-between text-left"
+          >
+            <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <SlidersHorizontal size={17} className="text-emerald-600" />
+              Execution
+            </span>
+            <span className="flex h-8 w-8 items-center justify-center rounded-full border border-line bg-panel text-slate-700 transition duration-200 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700">
+              <ChevronDown size={17} className={`transition duration-200 ${executionOpen ? "rotate-180" : ""}`} />
+            </span>
+          </button>
+          <div className={`grid overflow-hidden transition-all duration-300 ease-out ${executionOpen ? "max-h-[520px] opacity-100" : "max-h-0 opacity-0"}`}>
+            <div className="grid grid-cols-2 gap-4 pt-1">
+              <Field label="Base URL override">
+                <input className="w-full rounded border border-line px-3 py-2 text-sm transition focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.yourdomain.com" />
+              </Field>
+              <Field label="Slack webhook">
+                <input className="w-full rounded border border-line px-3 py-2 text-sm transition focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100" value={slackWebhook} onChange={(e) => setSlackWebhook(e.target.value)} placeholder="Optional" />
+              </Field>
+              <Field label="Test intensity">
+                <select className="w-full rounded border border-line px-3 py-2 text-sm transition focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-100" value={intensity} onChange={(e) => setIntensity(e.target.value)}>
+                  <option value="standard">Standard</option>
+                  <option value="deep">Deep</option>
+                </select>
+              </Field>
+              <Field label="Timeout seconds">
+                <input className="w-full rounded border border-line px-3 py-2 text-sm transition focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100" type="number" min={1} max={120} value={timeout} onChange={(e) => setTimeoutValue(Number(e.target.value))} />
+              </Field>
+              <Field label="Concurrency">
+                <input className="w-full rounded border border-line px-3 py-2 text-sm transition focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-100" type="number" min={1} max={25} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} />
+              </Field>
+            </div>
           </div>
         </section>
 
         <aside className="space-y-4 rounded border border-line bg-white p-5 shadow-soft">
-          <div className="flex gap-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-            <AlertTriangle size={18} className="shrink-0" />
-            Security probes should run only against authorized systems. Deep mode adds stronger mutation checks.
+          <div className="relative flex justify-end">
+            <button
+              type="button"
+              onClick={() => setWarningOpen((value) => !value)}
+              className="group flex h-10 w-10 items-center justify-center rounded-full border border-amber-300 bg-amber-50 text-amber-800 transition duration-200 hover:border-amber-400 hover:bg-amber-100 hover:shadow-[0_0_22px_rgba(245,158,11,0.3)]"
+              aria-label="Show security warning"
+            >
+              <AlertTriangle size={18} className="transition duration-200 group-hover:scale-110" />
+            </button>
+            {warningOpen && (
+              <div className="absolute right-0 top-12 z-10 w-80 rounded border border-amber-200 bg-white p-3 text-sm text-amber-950 shadow-soft">
+                Security probes should run only against authorized systems. Deep mode adds stronger mutation checks.
+              </div>
+            )}
           </div>
           {error && <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</div>}
-          <button disabled={submitting} className="inline-flex w-full items-center justify-center gap-2 rounded bg-ink px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+          <button disabled={submitting} className="inline-flex w-full items-center justify-center gap-2 rounded bg-gradient-to-r from-slate-950 to-sky-900 px-4 py-2.5 text-sm font-medium text-white transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(14,165,233,0.28)] disabled:cursor-not-allowed disabled:opacity-60">
             <Play size={17} />
             {submitting ? "Starting..." : "Run tests"}
           </button>

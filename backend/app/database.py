@@ -1,6 +1,7 @@
 import os
 from collections.abc import Generator
 
+from sqlalchemy import inspect, text
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -28,3 +29,14 @@ def init_db() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    add_missing_columns()
+
+
+def add_missing_columns() -> None:
+    inspector = inspect(engine)
+    if "test_runs" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("test_runs")}
+    with engine.begin() as connection:
+        if "api_docs" not in columns:
+            connection.execute(text("ALTER TABLE test_runs ADD COLUMN api_docs TEXT"))

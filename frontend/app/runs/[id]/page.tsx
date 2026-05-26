@@ -156,6 +156,7 @@ export default function RunDetailPage() {
       <section className="flex flex-wrap items-center gap-3 rounded border border-line bg-white p-4 shadow-soft">
         <a href={`${API_BASE}/api/runs/${runId}/export/html`} className="inline-flex items-center gap-2 rounded bg-ink px-3 py-2 text-sm font-medium text-white"><Download size={16} /> HTML</a>
         <a href={`${API_BASE}/api/runs/${runId}/export/csv`} className="inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm"><Download size={16} /> CSV</a>
+        <a href={`${API_BASE}/api/runs/${runId}/export/postman`} className="inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm"><Download size={16} /> Postman collection</a>
         <input className="min-w-80 rounded border border-line px-3 py-2 text-sm" value={slackWebhook} onChange={(e) => setSlackWebhook(e.target.value)} placeholder="Slack webhook URL" />
         <button onClick={sendSlack} className="inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm"><Send size={16} /> Send Slack alert</button>
         {message && <span className="text-sm text-emerald-700">{message}</span>}

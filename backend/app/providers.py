@@ -14,14 +14,24 @@ class LLMProvider(ABC):
         self.api_token = api_token
         self.custom_base_url = custom_base_url
 
-    def prompt(self, endpoint: EndpointSummary, intensity: str) -> str:
+    def prompt(self, endpoint: EndpointSummary, intensity: str, api_docs: str | None = None) -> str:
+        docs_context = ""
+        if api_docs and api_docs.strip():
+            docs_context = f"""
+API documentation and business context:
+{api_docs[:12000]}
+
+Use the documentation to create business-rule-aware tests, including required workflows, permissions, state transitions, validation rules, error contracts, and domain invariants. Prefer realistic data and assertions over generic probes.
+"""
         return f"""
 Return strict JSON only. Generate 10-12 API tests for this endpoint.
 Include functional, validation, security, and edge cases. Security cases should include SQLi, IDOR, auth bypass, ORM bypass, malformed payloads, and boundary values where relevant.
+Add business-oriented cases when the documentation describes workflows, roles, statuses, limits, or domain rules.
 Use this exact shape:
 {{"endpoint":"METHOD /path","tests":[{{"name":"...","category":"functional|security|edge|regression","severity":"critical|high|medium|low|info","request":{{"method":"...","path":"...","headers":{{}},"query":{{}},"body":{{}}}},"expected":{{"status_codes":[200],"behavior":"..."}},"reasoning":"..."}}]}}
 
 Intensity: {intensity}
+{docs_context}
 Endpoint:
 {endpoint.model_dump_json()}
 """
@@ -32,7 +42,7 @@ Endpoint:
         return None
 
     @abstractmethod
-    async def generate_tests(self, endpoint: EndpointSummary, intensity: str) -> dict:
+    async def generate_tests(self, endpoint: EndpointSummary, intensity: str, api_docs: str | None = None) -> dict:
         raise NotImplementedError
 
 
@@ -41,7 +51,7 @@ class ProviderRateLimitError(RuntimeError):
 
 
 class DeterministicProvider(LLMProvider):
-    async def generate_tests(self, endpoint: EndpointSummary, intensity: str) -> dict:
+    async def generate_tests(self, endpoint: EndpointSummary, intensity: str, api_docs: str | None = None) -> dict:
         body = endpoint.body if isinstance(endpoint.body, dict) else {}
         tests = [
             {
@@ -118,7 +128,7 @@ class DeterministicProvider(LLMProvider):
 
 
 class GeminiProvider(DeterministicProvider):
-    async def generate_tests(self, endpoint: EndpointSummary, intensity: str) -> dict:
+    async def generate_tests(self, endpoint: EndpointSummary, intensity: str, api_docs: str | None = None) -> dict:
         demo = await self.maybe_demo(endpoint, intensity)
         if demo:
             return demo
@@ -127,7 +137,7 @@ class GeminiProvider(DeterministicProvider):
             response = await client.post(
                 url,
                 params={"key": self.api_token},
-                json={"contents": [{"parts": [{"text": self.prompt(endpoint, intensity)}]}]},
+                json={"contents": [{"parts": [{"text": self.prompt(endpoint, intensity, api_docs)}]}]},
             )
         response.raise_for_status()
         text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -135,18 +145,18 @@ class GeminiProvider(DeterministicProvider):
 
 
 class GroqProvider(DeterministicProvider):
-    async def generate_tests(self, endpoint: EndpointSummary, intensity: str) -> dict:
+    async def generate_tests(self, endpoint: EndpointSummary, intensity: str, api_docs: str | None = None) -> dict:
         demo = await self.maybe_demo(endpoint, intensity)
         if demo:
             return demo
         try:
-            return await openai_compatible_chat("https://api.groq.com/openai/v1", self.model, self.api_token, self.prompt(endpoint, intensity))
+            return await openai_compatible_chat("https://api.groq.com/openai/v1", self.model, self.api_token, self.prompt(endpoint, intensity, api_docs))
         except (json.JSONDecodeError, ProviderRateLimitError):
             return await DeterministicProvider(self.model, self.api_token, self.custom_base_url).generate_tests(endpoint, intensity)
 
 
 class ClaudeProvider(DeterministicProvider):
-    async def generate_tests(self, endpoint: EndpointSummary, intensity: str) -> dict:
+    async def generate_tests(self, endpoint: EndpointSummary, intensity: str, api_docs: str | None = None) -> dict:
         demo = await self.maybe_demo(endpoint, intensity)
         if demo:
             return demo
@@ -161,7 +171,7 @@ class ClaudeProvider(DeterministicProvider):
                 json={
                     "model": self.model,
                     "max_tokens": 4096,
-                    "messages": [{"role": "user", "content": self.prompt(endpoint, intensity)}],
+                    "messages": [{"role": "user", "content": self.prompt(endpoint, intensity, api_docs)}],
                 },
             )
         response.raise_for_status()
@@ -170,22 +180,22 @@ class ClaudeProvider(DeterministicProvider):
 
 
 class OpenAICompatibleProvider(DeterministicProvider):
-    async def generate_tests(self, endpoint: EndpointSummary, intensity: str) -> dict:
+    async def generate_tests(self, endpoint: EndpointSummary, intensity: str, api_docs: str | None = None) -> dict:
         demo = await self.maybe_demo(endpoint, intensity)
         if demo:
             return demo
         base_url = self.custom_base_url or "https://api.openai.com/v1"
-        return await openai_compatible_chat(base_url, self.model, self.api_token, self.prompt(endpoint, intensity))
+        return await openai_compatible_chat(base_url, self.model, self.api_token, self.prompt(endpoint, intensity, api_docs))
 
 
 class CustomProvider(DeterministicProvider):
-    async def generate_tests(self, endpoint: EndpointSummary, intensity: str) -> dict:
+    async def generate_tests(self, endpoint: EndpointSummary, intensity: str, api_docs: str | None = None) -> dict:
         demo = await self.maybe_demo(endpoint, intensity)
         if demo:
             return demo
         if not self.custom_base_url:
             raise ValueError("Custom provider requires custom_base_url")
-        return await openai_compatible_chat(self.custom_base_url, self.model, self.api_token, self.prompt(endpoint, intensity))
+        return await openai_compatible_chat(self.custom_base_url, self.model, self.api_token, self.prompt(endpoint, intensity, api_docs))
 
 
 def get_provider(provider: str, model: str, api_token: str, custom_base_url: str | None = None) -> LLMProvider:

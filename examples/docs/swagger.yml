@@ -1,0 +1,327 @@
+openapi: 3.0.0
+info:
+  title: Practice API for QA
+  description: E-commerce API simulator for manual and automated API testing practice. Includes chaos mode, rate limiting, and dynamic data generation.
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000
+    description: Local Server
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - bearerAuth: []
+paths:
+  /auth/register:
+    post:
+      summary: Register a new user
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, firstName, lastName]
+              properties:
+                email: { type: string }
+                password: { type: string }
+                firstName: { type: string }
+                lastName: { type: string }
+                phone: { type: string }
+      responses:
+        '201':
+          description: Created
+  /auth/login:
+    post:
+      summary: Login
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Success
+  /auth/refresh:
+    post:
+      summary: Refresh JWT token
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: Success
+  /auth/logout:
+    post:
+      summary: Logout
+      tags: [Auth]
+      responses:
+        '200':
+          description: OK
+  /users/me:
+    get:
+      summary: Get my profile
+      tags: [Users]
+      responses:
+        '200':
+          description: OK
+    patch:
+      summary: Update my profile
+      tags: [Users]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                phone: { type: string }
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Delete my account
+      tags: [Users]
+      responses:
+        '200':
+          description: OK
+  /users/change-password:
+    post:
+      summary: Change password
+      tags: [Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string }
+      responses:
+        '200':
+          description: OK
+  /products:
+    get:
+      summary: Get all products
+      tags: [Products]
+      security: []
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 10 }
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: sort
+          schema: { type: string, enum: [price, -price] }
+      responses:
+        '200':
+          description: A paginated list of products
+    post:
+      summary: Create a product
+      tags: [Products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, price, category]
+              properties:
+                name: { type: string }
+                price: { type: number }
+                category: { type: string }
+                stock: { type: integer, default: 100 }
+                description: { type: string }
+      responses:
+        '201':
+          description: Created
+  /products/{id}:
+    get:
+      summary: Get a product by ID
+      tags: [Products]
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+    put:
+      summary: Update a product
+      tags: [Products]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                price: { type: number }
+                category: { type: string }
+                stock: { type: integer }
+                description: { type: string }
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Delete a product
+      tags: [Products]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+  /cart:
+    get:
+      summary: Get shopping cart
+      tags: [Cart]
+      responses:
+        '200':
+          description: OK
+    post:
+      summary: Add to cart
+      tags: [Cart]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, quantity]
+              properties:
+                productId: { type: string }
+                quantity: { type: integer }
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Clear cart
+      tags: [Cart]
+      responses:
+        '200':
+          description: OK
+  /cart/{productId}:
+    patch:
+      summary: Update quantity in cart
+      tags: [Cart]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity: { type: integer }
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Remove item from cart
+      tags: [Cart]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+  /checkout:
+    post:
+      summary: Checkout cart
+      tags: [Orders]
+      responses:
+        '201':
+          description: Created
+  /orders:
+    get:
+      summary: Get my orders
+      tags: [Orders]
+      responses:
+        '200':
+          description: OK
+  /orders/{orderId}:
+    get:
+      summary: Get order details
+      tags: [Orders]
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+  /admin/users:
+    get:
+      summary: Get all users (Admin only)
+      tags: [Admin]
+      responses:
+        '200':
+          description: OK
+  /admin/users/{id}/ban:
+    patch:
+      summary: Ban a user (Admin only)
+      tags: [Admin]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+  /admin/products/{id}:
+    delete:
+      summary: Delete a product (Admin only)
+      tags: [Admin]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
