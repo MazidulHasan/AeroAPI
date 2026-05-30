@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import re
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -141,6 +142,24 @@ def render_postman_collection(db: Session, run_id: int) -> dict:
 
 def postman_item_for_test(test: models.GeneratedTest, endpoint: models.Endpoint, run: models.TestRun) -> dict:
     override = json.loads(test.request_override_json)
+    dependencies = override.get("dependencies", {}) if isinstance(override.get("dependencies"), dict) else {}
+    before = dependencies.get("before", []) or []
+    after = dependencies.get("after", []) or []
+    main_item = postman_request_item(test, endpoint, override)
+    if before or after:
+        items = []
+        items.extend(postman_dependency_item(step, f"Setup {index + 1}") for index, step in enumerate(before) if isinstance(step, dict))
+        items.append(main_item)
+        items.extend(postman_dependency_item(step, f"Cleanup {index + 1}") for index, step in enumerate(after) if isinstance(step, dict))
+        return {
+            "name": f"{test.severity.upper()} - {test.name}",
+            "description": f"Dependency-aware case. Category: {test.category}. Severity: {test.severity}.",
+            "item": items,
+        }
+    return main_item
+
+
+def postman_request_item(test: models.GeneratedTest, endpoint: models.Endpoint, override: dict) -> dict:
     method = str(override.get("method") or endpoint.method).upper()
     path = str(override.get("path") or endpoint.path or "/")
     headers = normalize_headers(override.get("headers", {}))
@@ -159,6 +178,30 @@ def postman_item_for_test(test: models.GeneratedTest, endpoint: models.Endpoint,
             "method": method,
             "header": headers,
             "url": url,
+        },
+    }
+    if body is not None and method not in {"GET", "HEAD"}:
+        if not any(header["key"].lower() == "content-type" for header in headers):
+            item["request"]["header"].append({"key": "Content-Type", "value": "application/json"})
+        item["request"]["body"] = {"mode": "raw", "raw": json.dumps(body, indent=2), "options": {"raw": {"language": "json"}}}
+    return item
+
+
+def postman_dependency_item(step: dict, fallback_name: str) -> dict:
+    method = str(step.get("method", "GET")).upper()
+    path = str(step.get("path", "/"))
+    query = step.get("query", {}) if isinstance(step.get("query"), dict) else {}
+    headers = normalize_headers(step.get("headers", {}) if isinstance(step.get("headers"), dict) else {})
+    body = step.get("body")
+    item = {
+        "name": step.get("name") or fallback_name,
+        "event": [
+            {"listen": "test", "script": {"type": "text/javascript", "exec": dependency_test_script(step)}},
+        ],
+        "request": {
+            "method": method,
+            "header": headers,
+            "url": postman_url(path, query),
         },
     }
     if body is not None and method not in {"GET", "HEAD"}:
@@ -232,6 +275,58 @@ def postrequest_script(test: models.GeneratedTest, expected_status_codes: list[i
             ]
         )
     return lines
+
+
+def dependency_test_script(step: dict) -> list[str]:
+    lines = [
+        "pm.test('Dependency request completed successfully', function () {",
+        "  pm.expect(pm.response.code).to.be.below(400);",
+        "});",
+    ]
+    extract = step.get("extract") if isinstance(step.get("extract"), dict) else {}
+    if extract:
+        lines.extend(
+            [
+                "let aeroapiJson = {};",
+                "try { aeroapiJson = pm.response.json(); } catch (error) { aeroapiJson = {}; }",
+            ]
+        )
+        for variable, path in extract.items():
+            lines.extend(postman_extract_lines(str(variable), str(path)))
+    else:
+        lines.extend(
+            [
+                "let aeroapiJson = {};",
+                "try { aeroapiJson = pm.response.json(); } catch (error) { aeroapiJson = {}; }",
+                "['token', 'access_token', 'cartId', 'cart_id', 'checkoutId', 'orderId', 'id'].forEach(function (key) {",
+                "  if (aeroapiJson[key] !== undefined) pm.collectionVariables.set(key, String(aeroapiJson[key]));",
+                "});",
+            ]
+        )
+    return lines
+
+
+def postman_extract_lines(variable: str, path: str) -> list[str]:
+    if path.lower().startswith("header."):
+        header = path.split(".", 1)[1]
+        return [
+            f"const {safe_js_identifier(variable)} = pm.response.headers.get('{js_string(header)}');",
+            f"if ({safe_js_identifier(variable)} !== null && {safe_js_identifier(variable)} !== undefined) pm.collectionVariables.set('{js_string(variable)}', String({safe_js_identifier(variable)}));",
+        ]
+    parts = [part for part in path.removeprefix("$.").split(".") if part]
+    accessor = "aeroapiJson" + "".join(f"[{json.dumps(part)}]" for part in parts)
+    identifier = safe_js_identifier(variable)
+    return [
+        f"const {identifier} = {accessor};",
+        f"if ({identifier} !== null && {identifier} !== undefined) pm.collectionVariables.set('{js_string(variable)}', String({identifier}));",
+    ]
+
+
+def safe_js_identifier(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_$]", "_", value)
+    if not cleaned or cleaned[0].isdigit():
+        cleaned = f"value_{cleaned}"
+    return cleaned
 
 
 def js_string(value: str) -> str:

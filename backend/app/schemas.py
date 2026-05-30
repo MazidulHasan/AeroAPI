@@ -13,6 +13,15 @@ class EndpointSummary(BaseModel):
     body: dict | list | str | None = None
 
 
+class EndpointReference(BaseModel):
+    name: str
+    method: str
+    path: str
+    headers: dict = Field(default_factory=dict)
+    params: dict = Field(default_factory=dict)
+    body: dict | list | str | None = None
+
+
 class CollectionUploadResponse(BaseModel):
     collection_id: int
     name: str

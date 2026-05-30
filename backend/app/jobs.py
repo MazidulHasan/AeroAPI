@@ -6,8 +6,8 @@ from app import models
 from app.database import SessionLocal
 from app.providers import DeterministicProvider, ProviderRateLimitError
 from app.runner import run_generated_tests
-from app.test_generation import generate_for_endpoint
-from app.schemas import EndpointSummary
+from app.test_generation import generate_for_endpoint, normalize_request
+from app.schemas import EndpointReference, EndpointSummary
 from sqlalchemy.orm import Session
 
 
@@ -45,6 +45,17 @@ async def execute_run(
         db.commit()
 
         generated = []
+        endpoint_refs = [
+            EndpointReference(
+                name=item.name,
+                method=item.method,
+                path=item.path,
+                headers=json.loads(item.headers_json),
+                params=json.loads(item.params_json),
+                body=json.loads(item.body_json),
+            )
+            for item in endpoints
+        ]
         for endpoint in endpoints:
             if run_id in CANCELLED_RUNS:
                 mark_cancelled(db, run)
@@ -58,6 +69,7 @@ async def execute_run(
                     model=run.model,
                     api_token=api_token,
                     api_docs=api_docs or run.api_docs,
+                    available_endpoints=endpoint_refs,
                     intensity=intensity,
                     custom_base_url=custom_base_url,
                 )
@@ -70,6 +82,7 @@ async def execute_run(
                     api_token=api_token,
                     intensity=intensity,
                     custom_base_url=custom_base_url,
+                    available_endpoints=endpoint_refs,
                     fallback_reason="Provider returned malformed JSON.",
                 )
             except ProviderRateLimitError:
@@ -81,6 +94,7 @@ async def execute_run(
                     api_token=api_token,
                     intensity=intensity,
                     custom_base_url=custom_base_url,
+                    available_endpoints=endpoint_refs,
                     fallback_reason="Provider rate limit was reached.",
                 )
             generated.extend(endpoint_tests)
@@ -127,6 +141,7 @@ async def generate_deterministic_for_endpoint(
     api_token: str,
     intensity: str,
     custom_base_url: str | None,
+    available_endpoints: list[EndpointReference],
     fallback_reason: str,
 ) -> list[models.GeneratedTest]:
     endpoint_summary = EndpointSummary(
@@ -142,15 +157,16 @@ async def generate_deterministic_for_endpoint(
     )
     generated = await DeterministicProvider(model, api_token, custom_base_url).generate_tests(endpoint_summary, intensity)
     rows = []
-    for item in generated["tests"][:12]:
+    for item in generated["tests"][:24]:
         expected = item.get("expected", {})
+        request = normalize_request(item, available_endpoints, endpoint_summary)
         row = models.GeneratedTest(
             test_run_id=run_id,
             endpoint_id=endpoint.id,
             name=item["name"],
             category=item["category"],
             severity=item["severity"],
-            request_override_json=json.dumps(item["request"]),
+            request_override_json=json.dumps(request),
             expected_behavior=json.dumps(expected),
             ai_reasoning=f"{item['reasoning']} {fallback_reason} AeroAPI used local deterministic generation.",
         )

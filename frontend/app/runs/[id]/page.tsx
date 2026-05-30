@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { Download, RefreshCcw, Send, StopCircle } from "lucide-react";
+import { Download, GitBranch, RefreshCcw, Send, StopCircle } from "lucide-react";
 import { API_BASE, apiFetch, ResultRow, RunSummary } from "@/lib/api";
 import { SeverityBadge, StatusBadge } from "@/components/badges";
 
@@ -123,9 +123,14 @@ export default function RunDetailPage() {
                 <tr><td className="px-4 py-6 text-slate-500" colSpan={6}>Results appear after the run finishes.</td></tr>
               ) : filtered.map((item) => (
                 <Fragment key={item.id}>
-                  <tr onClick={() => setOpen(open === item.id ? null : item.id)} className="cursor-pointer border-t border-line hover:bg-panel">
+                  <tr onClick={() => setOpen(open === item.id ? null : item.id)} className={`cursor-pointer border-t border-line transition duration-150 hover:bg-panel ${hasDependencies(item) ? "bg-sky-50/60" : ""} ${dependencyFailed(item) ? "border-l-4 border-l-red-400" : ""}`}>
                     <td className="px-4 py-3 font-mono text-xs">{item.endpoint.method} {item.endpoint.path}</td>
-                    <td className="px-4 py-3">{item.test_name}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {hasDependencies(item) && <GitBranch size={15} className="text-sky-700" />}
+                        <span>{item.test_name}</span>
+                      </div>
+                    </td>
                     <td className="px-4 py-3"><SeverityBadge value={item.severity} /></td>
                     <td className="px-4 py-3"><StatusBadge value={item.status} /></td>
                     <td className="px-4 py-3">{item.response_status ?? "-"}</td>
@@ -134,8 +139,9 @@ export default function RunDetailPage() {
                   {open === item.id && (
                     <tr className="border-t border-line bg-slate-50">
                       <td colSpan={6} className="px-4 py-4">
+                        {hasDependencies(item) && <DependencyFlow request={item.request} />}
                         <div className="grid grid-cols-2 gap-4">
-                          <Inspector title="Request" value={item.request} />
+                          <Inspector title="Main request" value={mainRequest(item.request)} />
                           <Inspector title="Response" value={{ status: item.response_status, headers: item.response_headers, body: item.response_body_preview }} />
                         </div>
                         <div className="mt-4 grid grid-cols-3 gap-4 text-sm">
@@ -175,4 +181,76 @@ function Inspector({ title, value }: { title: string; value: unknown }) {
 
 function Info({ title, value }: { title: string; value: string }) {
   return <div className="rounded border border-line bg-white p-3"><div className="mb-1 text-xs font-semibold uppercase text-slate-500">{title}</div><p className="text-sm text-slate-700">{value}</p></div>;
+}
+
+function hasDependencies(item: ResultRow) {
+  const dependencies = item.request.dependencies as { before?: unknown[]; after?: unknown[] } | undefined;
+  return Boolean((dependencies?.before?.length ?? 0) + (dependencies?.after?.length ?? 0));
+}
+
+function dependencyFailed(item: ResultRow) {
+  const dependencies = item.request.dependencies as { before?: DependencyStep[]; after?: DependencyStep[] } | undefined;
+  return [...(dependencies?.before ?? []), ...(dependencies?.after ?? [])].some((step) => Boolean(step.error) || Number(step.status ?? 0) >= 400);
+}
+
+function mainRequest(request: Record<string, unknown>) {
+  return request.main ?? request;
+}
+
+function DependencyFlow({ request }: { request: Record<string, unknown> }) {
+  const dependencies = request.dependencies as { before?: DependencyStep[]; after?: DependencyStep[] } | undefined;
+  const before = dependencies?.before ?? [];
+  const after = dependencies?.after ?? [];
+  return (
+    <div className="mb-4 rounded border border-sky-200 bg-white p-3 shadow-sm">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-sky-900">
+        <GitBranch size={16} />
+        Dependency flow
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        <StepGroup title="Before main request" steps={before} tone="sky" />
+        <StepGroup title="Main request" steps={[mainStep(request)]} tone="emerald" />
+        <StepGroup title="After main request" steps={after} tone="amber" />
+      </div>
+    </div>
+  );
+}
+
+type DependencyStep = {
+  name?: string;
+  method?: string;
+  url?: string;
+  status?: number | null;
+  error?: string;
+  extracts?: Record<string, string>;
+};
+
+function mainStep(request: Record<string, unknown>): DependencyStep {
+  const main = mainRequest(request) as Record<string, unknown>;
+  return { name: "Main API test", method: String(main.method ?? ""), url: String(main.url ?? "") };
+}
+
+function StepGroup({ title, steps, tone }: { title: string; steps: DependencyStep[]; tone: "sky" | "emerald" | "amber" }) {
+  const toneClass = {
+    sky: "border-sky-200 bg-sky-50 text-sky-950",
+    emerald: "border-emerald-200 bg-emerald-50 text-emerald-950",
+    amber: "border-amber-200 bg-amber-50 text-amber-950"
+  }[tone];
+  return (
+    <div>
+      <div className="mb-2 text-xs font-semibold uppercase text-slate-500">{title}</div>
+      <div className="space-y-2">
+        {steps.length === 0 ? (
+          <div className="rounded border border-line bg-panel p-2 text-xs text-slate-500">No steps</div>
+        ) : steps.map((step, index) => (
+          <div key={`${step.name}-${index}`} className={`rounded border p-2 text-xs ${toneClass}`}>
+            <div className="font-semibold">{step.method} {step.name}</div>
+            <div className="mt-1 break-all font-mono text-[11px]">{step.url}</div>
+            {"status" in step && <div className="mt-1">Status: {step.status ?? step.error ?? "-"}</div>}
+            {step.extracts && Object.keys(step.extracts).length > 0 && <div className="mt-1">Extracts: {Object.keys(step.extracts).join(", ")}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
