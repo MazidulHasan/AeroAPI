@@ -102,6 +102,6 @@ def test_render_postman_collection_exports_dependency_folder():
 
     case_folder = exported["item"][0]["item"][0]
     assert [item["name"] for item in case_folder["item"]] == ["Login", "Create cart", "INFO - Checkout with cart token", "Delete cart"]
-    setup_script = "\n".join(case_folder["item"][0]["event"][0]["script"]["exec"])
+    setup_script = "\n".join(case_folder["item"][0]["event"][1]["script"]["exec"])
     assert "pm.collectionVariables.set('token'" in setup_script
     session.close()

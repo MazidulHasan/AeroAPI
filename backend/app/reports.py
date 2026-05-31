@@ -196,6 +196,7 @@ def postman_dependency_item(step: dict, fallback_name: str) -> dict:
     item = {
         "name": step.get("name") or fallback_name,
         "event": [
+            {"listen": "prerequest", "script": {"type": "text/javascript", "exec": dynamic_variable_script()}},
             {"listen": "test", "script": {"type": "text/javascript", "exec": dependency_test_script(step)}},
         ],
         "request": {
@@ -244,13 +245,24 @@ def parse_expected_status_codes(expected_behavior: str) -> list[int]:
 
 
 def prerequest_script(test: models.GeneratedTest) -> list[str]:
-    return [
+    return dynamic_variable_script() + [
         f"// AeroAPI generated case: {js_string(test.name)}",
         f"// Category: {js_string(test.category)} | Severity: {js_string(test.severity)}",
         "pm.variables.set('aeroapi_run_at', new Date().toISOString());",
         "if (!pm.collectionVariables.get('baseUrl') && !pm.environment.get('baseUrl')) {",
         "  console.warn('Set baseUrl as a collection or environment variable before running this request.');",
         "}",
+    ]
+
+
+def dynamic_variable_script() -> list[str]:
+    return [
+        "const aeroapiSuffix = Date.now();",
+        "if (!pm.collectionVariables.get('dynamicEmail')) pm.collectionVariables.set('dynamicEmail', `aeroapi_${aeroapiSuffix}@example.com`);",
+        "if (!pm.collectionVariables.get('dynamicPassword')) pm.collectionVariables.set('dynamicPassword', `Pass123!${String(aeroapiSuffix).slice(-6)}`);",
+        "if (!pm.collectionVariables.get('dynamicFirstName')) pm.collectionVariables.set('dynamicFirstName', 'Aero');",
+        "if (!pm.collectionVariables.get('dynamicLastName')) pm.collectionVariables.set('dynamicLastName', 'Tester');",
+        "if (!pm.collectionVariables.get('dynamicProductName')) pm.collectionVariables.set('dynamicProductName', `AeroAPI Test Product ${aeroapiSuffix}`);",
     ]
 
 
@@ -289,6 +301,9 @@ def dependency_test_script(step: dict) -> list[str]:
             [
                 "let aeroapiJson = {};",
                 "try { aeroapiJson = pm.response.json(); } catch (error) { aeroapiJson = {}; }",
+                "function aeroapiReadPath(source, parts) {",
+                "  return parts.reduce(function (current, part) { return current === null || current === undefined ? undefined : current[part]; }, source);",
+                "}",
             ]
         )
         for variable, path in extract.items():
@@ -298,9 +313,11 @@ def dependency_test_script(step: dict) -> list[str]:
             [
                 "let aeroapiJson = {};",
                 "try { aeroapiJson = pm.response.json(); } catch (error) { aeroapiJson = {}; }",
-                "['token', 'access_token', 'cartId', 'cart_id', 'checkoutId', 'orderId', 'id'].forEach(function (key) {",
+                "['token', 'accessToken', 'access_token', 'cartId', 'cart_id', 'checkoutId', 'orderId', 'id'].forEach(function (key) {",
                 "  if (aeroapiJson[key] !== undefined) pm.collectionVariables.set(key, String(aeroapiJson[key]));",
                 "});",
+                "if (aeroapiJson.accessToken !== undefined && !pm.collectionVariables.get('token')) pm.collectionVariables.set('token', String(aeroapiJson.accessToken));",
+                "if (aeroapiJson.token !== undefined && !pm.collectionVariables.get('accessToken')) pm.collectionVariables.set('accessToken', String(aeroapiJson.token));",
             ]
         )
     return lines
@@ -312,14 +329,33 @@ def postman_extract_lines(variable: str, path: str) -> list[str]:
         return [
             f"const {safe_js_identifier(variable)} = pm.response.headers.get('{js_string(header)}');",
             f"if ({safe_js_identifier(variable)} !== null && {safe_js_identifier(variable)} !== undefined) pm.collectionVariables.set('{js_string(variable)}', String({safe_js_identifier(variable)}));",
+            *postman_alias_lines(variable, safe_js_identifier(variable)),
         ]
     parts = [part for part in path.removeprefix("$.").split(".") if part]
-    accessor = "aeroapiJson" + "".join(f"[{json.dumps(part)}]" for part in parts)
+    accessor = f"aeroapiReadPath(aeroapiJson, {json.dumps(parts)})"
     identifier = safe_js_identifier(variable)
     return [
         f"const {identifier} = {accessor};",
         f"if ({identifier} !== null && {identifier} !== undefined) pm.collectionVariables.set('{js_string(variable)}', String({identifier}));",
+        *postman_alias_lines(variable, identifier),
     ]
+
+
+def postman_alias_lines(variable: str, identifier: str) -> list[str]:
+    lines = []
+    if variable in {"accessToken", "access_token"}:
+        lines.append(f"if ({identifier} !== null && {identifier} !== undefined && !pm.collectionVariables.get('token')) pm.collectionVariables.set('token', String({identifier}));")
+    if variable == "token":
+        lines.append(f"if ({identifier} !== null && {identifier} !== undefined && !pm.collectionVariables.get('accessToken')) pm.collectionVariables.set('accessToken', String({identifier}));")
+    if variable in {"customProductId", "productId", "firstProductId"}:
+        lines.extend(
+            [
+                f"if ({identifier} !== null && {identifier} !== undefined && !pm.collectionVariables.get('customProductId')) pm.collectionVariables.set('customProductId', String({identifier}));",
+                f"if ({identifier} !== null && {identifier} !== undefined && !pm.collectionVariables.get('productId')) pm.collectionVariables.set('productId', String({identifier}));",
+                f"if ({identifier} !== null && {identifier} !== undefined && !pm.collectionVariables.get('firstProductId')) pm.collectionVariables.set('firstProductId', String({identifier}));",
+            ]
+        )
+    return lines
 
 
 def safe_js_identifier(value: str) -> str:

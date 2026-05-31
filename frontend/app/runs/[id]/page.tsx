@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { Download, GitBranch, RefreshCcw, Send, StopCircle } from "lucide-react";
+import { ChevronDown, Download, GitBranch, RefreshCcw, Send, StopCircle } from "lucide-react";
 import { API_BASE, apiFetch, ResultRow, RunSummary } from "@/lib/api";
 import { SeverityBadge, StatusBadge } from "@/components/badges";
 
@@ -223,14 +223,17 @@ type DependencyStep = {
   status?: number | null;
   error?: string;
   extracts?: Record<string, string>;
+  request?: unknown;
+  response?: unknown;
 };
 
 function mainStep(request: Record<string, unknown>): DependencyStep {
   const main = mainRequest(request) as Record<string, unknown>;
-  return { name: "Main API test", method: String(main.method ?? ""), url: String(main.url ?? "") };
+  return { name: "Main API test", method: String(main.method ?? ""), url: String(main.url ?? ""), request: main };
 }
 
 function StepGroup({ title, steps, tone }: { title: string; steps: DependencyStep[]; tone: "sky" | "emerald" | "amber" }) {
+  const [openStep, setOpenStep] = useState<number | null>(null);
   const toneClass = {
     sky: "border-sky-200 bg-sky-50 text-sky-950",
     emerald: "border-emerald-200 bg-emerald-50 text-emerald-950",
@@ -242,15 +245,94 @@ function StepGroup({ title, steps, tone }: { title: string; steps: DependencySte
       <div className="space-y-2">
         {steps.length === 0 ? (
           <div className="rounded border border-line bg-panel p-2 text-xs text-slate-500">No steps</div>
-        ) : steps.map((step, index) => (
-          <div key={`${step.name}-${index}`} className={`rounded border p-2 text-xs ${toneClass}`}>
-            <div className="font-semibold">{step.method} {step.name}</div>
-            <div className="mt-1 break-all font-mono text-[11px]">{step.url}</div>
-            {"status" in step && <div className="mt-1">Status: {step.status ?? step.error ?? "-"}</div>}
-            {step.extracts && Object.keys(step.extracts).length > 0 && <div className="mt-1">Extracts: {Object.keys(step.extracts).join(", ")}</div>}
-          </div>
-        ))}
+        ) : steps.map((step, index) => {
+          const selected = openStep === index;
+          return (
+            <div key={`${step.name}-${index}`} className={`rounded border text-xs ${toneClass} ${selected ? "ring-2 ring-slate-900/10" : ""}`}>
+              <button
+                type="button"
+                onClick={() => setOpenStep(selected ? null : index)}
+                className="flex w-full items-start justify-between gap-2 p-2 text-left transition duration-150 hover:bg-white/40"
+              >
+                <span className="min-w-0">
+                  <span className="block font-semibold">{step.method} {step.name}</span>
+                  <span className="mt-1 block break-all font-mono text-[11px]">{step.url}</span>
+                  {"status" in step && <span className="mt-1 block">Status: {step.status ?? step.error ?? "-"}</span>}
+                  {step.extracts && Object.keys(step.extracts).length > 0 && <span className="mt-1 block">Extracts: {Object.keys(step.extracts).join(", ")}</span>}
+                </span>
+                <ChevronDown size={15} className={`mt-1 shrink-0 transition duration-200 ${selected ? "rotate-180" : ""}`} />
+              </button>
+              {selected && (
+                <div className="border-t border-white/70 p-2">
+                  <button
+                    type="button"
+                    onClick={() => setOpenStep(null)}
+                    className="mb-2 rounded border border-white/70 bg-white/80 px-2 py-1 text-[11px] font-medium text-slate-700 transition hover:border-sky-300 hover:text-sky-700"
+                  >
+                    Hide details
+                  </button>
+                  <StepDebugPanel step={step} />
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
+    </div>
+  );
+}
+
+function StepDebugPanel({ step }: { step: DependencyStep }) {
+  const response = step.response ?? { status: step.status ?? null, error: step.error ?? null };
+  return (
+    <div className="rounded border border-slate-200 bg-white p-2 shadow-sm">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold text-ink">{step.method} {step.name}</div>
+          <div className="mt-1 break-all font-mono text-[11px] text-slate-500">{step.url}</div>
+        </div>
+        {"status" in step && <StatusChip status={step.status} error={step.error} />}
+      </div>
+      <div className="grid gap-2">
+        <DebugInspector title="Request" value={step.request ?? step} />
+        <DebugInspector title="Response" value={response} />
+      </div>
+    </div>
+  );
+}
+
+function StatusChip({ status, error }: { status?: number | null; error?: string }) {
+  const isError = Boolean(error) || Number(status ?? 0) >= 400;
+  const label = status ?? error ?? "-";
+  return <span className={`rounded-full px-3 py-1 text-xs font-semibold ${isError ? "bg-red-100 text-red-800" : "bg-emerald-100 text-emerald-800"}`}>Status {label}</span>;
+}
+
+function DebugInspector({ title, value }: { title: string; value: unknown }) {
+  const text = JSON.stringify(value, null, 2);
+  return (
+    <div className="min-w-0 rounded border border-line bg-slate-50">
+      <div className="flex items-center justify-between border-b border-line px-2 py-1.5">
+        <div className="text-xs font-semibold uppercase text-slate-500">{title}</div>
+        <button
+          type="button"
+          onClick={() => navigator.clipboard?.writeText(text)}
+          className="rounded border border-line bg-white px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:border-sky-300 hover:text-sky-700"
+        >
+          Copy
+        </button>
+      </div>
+      <pre className="max-h-96 min-h-36 overflow-auto p-2 text-[11px] leading-relaxed text-slate-100">
+        <code className="block rounded bg-slate-950 p-2">{text}</code>
+      </pre>
+    </div>
+  );
+}
+
+function MiniInspector({ title, value }: { title: string; value: unknown }) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">{title}</div>
+      <pre className="max-h-72 overflow-auto rounded bg-slate-950 p-2 text-[11px] leading-relaxed text-slate-100">{JSON.stringify(value, null, 2)}</pre>
     </div>
   );
 }

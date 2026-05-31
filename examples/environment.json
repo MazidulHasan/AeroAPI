@@ -1,0 +1,70 @@
+{
+	"id": "451e8457-b61e-4a30-842a-b37649ebfa74",
+	"name": "Practice API Local Environment",
+	"values": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:3000",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "accessToken",
+			"value": "",
+			"type": "secret",
+			"enabled": true
+		},
+		{
+			"key": "refreshToken",
+			"value": "",
+			"type": "secret",
+			"enabled": true
+		},
+		{
+			"key": "dynamicEmail",
+			"value": "",
+			"type": "any",
+			"enabled": true
+		},
+		{
+			"key": "dynamicPassword",
+			"value": "",
+			"type": "any",
+			"enabled": true
+		},
+		{
+			"key": "dynamicFirstName",
+			"value": "",
+			"type": "any",
+			"enabled": true
+		},
+		{
+			"key": "dynamicLastName",
+			"value": "",
+			"type": "any",
+			"enabled": true
+		},
+		{
+			"key": "customProductId",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "firstProductId",
+			"value": "",
+			"type": "any",
+			"enabled": true
+		},
+		{
+			"key": "latestOrderId",
+			"value": "",
+			"type": "any",
+			"enabled": true
+		}
+	],
+	"color": null,
+	"_postman_variable_scope": "environment",
+	"_postman_exported_at": "2026-05-31T18:17:17.221Z",
+	"_postman_exported_using": "Postman/12.12.6"
+}

@@ -1,4 +1,5 @@
 import json
+import re
 
 from sqlalchemy.orm import Session
 
@@ -44,7 +45,7 @@ async def generate_for_endpoint(
     rows = []
     for item in tests:
         expected = item.get("expected", {})
-        request = normalize_request(item, available_endpoints, endpoint_summary)
+        request = normalize_request(item, available_endpoints, endpoint_summary, api_docs)
         row = models.GeneratedTest(
             test_run_id=run_id,
             endpoint_id=endpoint.id,
@@ -80,6 +81,7 @@ def normalize_request(
     item: dict,
     available_endpoints: list[EndpointReference] | None = None,
     endpoint: EndpointSummary | None = None,
+    api_docs: str | None = None,
 ) -> dict:
     request = item.get("request") if isinstance(item.get("request"), dict) else {}
     dependencies = request.get("dependencies") or item.get("dependencies") or {}
@@ -91,8 +93,14 @@ def normalize_request(
     }
     request["headers"] = request.get("headers") if isinstance(request.get("headers"), dict) else {}
     request["query"] = request.get("query") if isinstance(request.get("query"), dict) else {}
+    if endpoint:
+        apply_endpoint_defaults(request, endpoint, item)
+    if is_missing_auth_case(item):
+        request["dependencies"] = {"before": [], "after": []}
+        remove_authorization(request)
+        return request
     if endpoint and available_endpoints:
-        apply_workflow_dependencies(request, endpoint, available_endpoints)
+        apply_workflow_dependencies(request, endpoint, available_endpoints, api_docs)
     return request
 
 
@@ -120,32 +128,60 @@ def normalize_path(path: str) -> str:
     return path.split("?", 1)[0].rstrip("/") or "/"
 
 
-def apply_workflow_dependencies(request: dict, endpoint: EndpointSummary, available_endpoints: list[EndpointReference]) -> None:
+def apply_workflow_dependencies(request: dict, endpoint: EndpointSummary, available_endpoints: list[EndpointReference], api_docs: str | None) -> None:
     dependencies = request.setdefault("dependencies", {"before": [], "after": []})
     dependencies["before"] = dependencies.get("before", [])
     dependencies["after"] = dependencies.get("after", [])
     path_text = endpoint.path.lower()
     needs_auth = needs_authenticated_flow(endpoint, request)
-    login = find_endpoint(available_endpoints, ("login", "signin", "auth"), ("POST",))
+    register = find_endpoint_or_docs(available_endpoints, api_docs, ("register",), "POST", "/auth/register", body=register_body())
+    login = find_endpoint_or_docs(available_endpoints, api_docs, ("login", "signin", "auth"), "POST", "/auth/login", body=user_login_body())
+    product_lookup = find_endpoint_or_docs(available_endpoints, api_docs, ("products",), "GET", "/products", params={"page": "1", "limit": "5"})
+    product_create = find_endpoint_or_docs(available_endpoints, api_docs, ("products",), "POST", "/products", body=product_body())
     add_cart = find_endpoint(available_endpoints, ("cart",), ("POST",))
     delete_cart = find_endpoint(available_endpoints, ("cart",), ("DELETE",))
 
     if needs_auth and login:
-        prepend_unique_step(dependencies["before"], login_step(login))
+        auth_steps = []
+        if register:
+            auth_steps.append(register_step(register))
+        auth_steps.append(login_step(login))
+        ensure_auth_prefix(dependencies["before"], auth_steps)
         ensure_bearer_header(request)
         for step in dependencies["before"] + dependencies["after"]:
-            if normalize_path(str(step.get("path", ""))) != normalize_path(login.path):
-                step["headers"] = with_bearer(step.get("headers", {}))
+            if normalize_path(str(step.get("path", ""))) not in {normalize_path(login.path), normalize_path(register.path) if register else ""}:
+                step["headers"] = with_bearer(step.get("headers", {}), "accessToken")
 
     if "checkout" in path_text:
+        if product_create:
+            insert_after_auth(dependencies["before"], admin_login_step())
+            upsert_step(dependencies["before"], product_create_step(product_create))
+        elif product_lookup:
+            upsert_step(dependencies["before"], product_lookup_step(product_lookup))
         if add_cart and normalize_path(add_cart.path) != normalize_path(endpoint.path):
-            append_unique_step(dependencies["before"], cart_step(add_cart))
-            ensure_checkout_body(request)
+            upsert_step(dependencies["before"], cart_step(add_cart))
         if delete_cart:
             append_unique_step(dependencies["after"], cleanup_step(delete_cart))
     elif "cart" in path_text and endpoint.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+        if endpoint.method.upper() == "POST":
+            if product_create:
+                insert_after_auth(dependencies["before"], admin_login_step())
+                upsert_step(dependencies["before"], product_create_step(product_create))
+            elif product_lookup:
+                upsert_step(dependencies["before"], product_lookup_step(product_lookup))
         if delete_cart and endpoint.method.upper() != "DELETE":
             append_unique_step(dependencies["after"], cleanup_step(delete_cart))
+    elif "order" in path_text:
+        if product_create:
+            insert_after_auth(dependencies["before"], admin_login_step())
+            upsert_step(dependencies["before"], product_create_step(product_create))
+        elif product_lookup:
+            upsert_step(dependencies["before"], product_lookup_step(product_lookup))
+        if add_cart:
+            upsert_step(dependencies["before"], cart_step(add_cart))
+        checkout = find_endpoint(available_endpoints, ("checkout",), ("POST",)) or find_endpoint_or_docs(available_endpoints, api_docs, ("checkout",), "POST", "/checkout")
+        if checkout and normalize_path(checkout.path) != normalize_path(endpoint.path):
+            upsert_step(dependencies["before"], checkout_step(checkout))
 
 
 def needs_authenticated_flow(endpoint: EndpointSummary, request: dict) -> bool:
@@ -168,6 +204,44 @@ def find_endpoint(endpoints: list[EndpointReference], keywords: tuple[str, ...],
     return None
 
 
+def find_endpoint_or_docs(
+    endpoints: list[EndpointReference],
+    api_docs: str | None,
+    keywords: tuple[str, ...],
+    method: str,
+    path: str,
+    headers: dict | None = None,
+    params: dict | None = None,
+    body=None,
+) -> EndpointReference | None:
+    found = find_endpoint(endpoints, keywords, (method,))
+    if found:
+        return found
+    if doc_mentions_endpoint(api_docs, method, path):
+        return EndpointReference(name=f"Documented {method} {path}", method=method, path=path, headers=headers or {}, params=params or {}, body=body)
+    return None
+
+
+def doc_mentions_endpoint(api_docs: str | None, method: str, path: str) -> bool:
+    if not api_docs:
+        return False
+    pattern = rf"\b{re.escape(method.upper())}\b\s+`?{re.escape(path)}`?\b"
+    return re.search(pattern, api_docs, re.IGNORECASE) is not None
+
+
+def register_step(endpoint: EndpointReference) -> dict:
+    return normalize_step(
+        {
+            "name": "Register dynamic user",
+            "method": endpoint.method,
+            "path": endpoint.path,
+            "headers": endpoint.headers,
+            "query": endpoint.params,
+            "body": endpoint.body or register_body(),
+        }
+    )
+
+
 def login_step(endpoint: EndpointReference) -> dict:
     return normalize_step(
         {
@@ -176,12 +250,57 @@ def login_step(endpoint: EndpointReference) -> dict:
             "path": endpoint.path,
             "headers": endpoint.headers,
             "query": endpoint.params,
-            "body": endpoint.body,
+            "body": endpoint.body or user_login_body(),
             "extract": {
-                "token": "$.token",
+                "token": "$.accessToken",
+                "accessToken": "$.accessToken",
                 "access_token": "$.access_token",
+                "refreshToken": "$.refreshToken",
                 "cartId": "$.cartId",
             },
+        }
+    )
+
+
+def admin_login_step() -> dict:
+    return normalize_step(
+        {
+            "name": "Login as admin",
+            "method": "POST",
+            "path": "/auth/login",
+            "headers": {"Content-Type": "application/json"},
+            "body": {"email": "admin@practice.com", "password": "password123"},
+            "extract": {"adminAccessToken": "$.accessToken"},
+        }
+    )
+
+
+def product_lookup_step(endpoint: EndpointReference) -> dict:
+    return normalize_step(
+        {
+            "name": "Fetch product catalogue",
+            "method": endpoint.method,
+            "path": endpoint.path,
+            "headers": endpoint.headers,
+            "query": endpoint.params or {"page": "1", "limit": "5"},
+            "body": endpoint.body,
+            "extract": {"customProductId": "$.data.0.id", "productId": "$.data.0.id", "firstProductId": "$.data.0.id"},
+        }
+    )
+
+
+def product_create_step(endpoint: EndpointReference) -> dict:
+    headers = endpoint.headers.copy() if isinstance(endpoint.headers, dict) else {}
+    headers["Authorization"] = "Bearer {{adminAccessToken}}"
+    return normalize_step(
+        {
+            "name": "Create product for checkout",
+            "method": endpoint.method,
+            "path": endpoint.path,
+            "headers": headers,
+            "query": endpoint.params,
+            "body": endpoint.body or product_body(),
+            "extract": {"customProductId": "$.product.id", "productId": "$.product.id", "firstProductId": "$.product.id"},
         }
     )
 
@@ -192,9 +311,9 @@ def cart_step(endpoint: EndpointReference) -> dict:
             "name": "Create or add cart item",
             "method": endpoint.method,
             "path": endpoint.path,
-            "headers": with_bearer(endpoint.headers),
+            "headers": with_bearer(endpoint.headers, "accessToken"),
             "query": endpoint.params,
-            "body": endpoint.body,
+            "body": endpoint.body or {"productId": "{{customProductId}}", "quantity": 1},
             "extract": {
                 "cartId": "$.cartId",
                 "cart_id": "$.cart_id",
@@ -211,25 +330,74 @@ def cleanup_step(endpoint: EndpointReference) -> dict:
             "name": "Cleanup cart",
             "method": endpoint.method,
             "path": endpoint.path,
-            "headers": with_bearer(endpoint.headers),
+            "headers": with_bearer(endpoint.headers, "accessToken"),
             "query": endpoint.params,
             "body": endpoint.body,
         }
     )
 
 
+def checkout_step(endpoint: EndpointReference) -> dict:
+    return normalize_step(
+        {
+            "name": "Checkout cart",
+            "method": endpoint.method,
+            "path": endpoint.path,
+            "headers": with_bearer(endpoint.headers, "accessToken"),
+            "query": endpoint.params,
+            "body": endpoint.body,
+            "extract": {"latestOrderId": "$.orderId", "orderId": "$.orderId", "checkoutId": "$.checkoutId"},
+        }
+    )
+
+
+def apply_endpoint_defaults(request: dict, endpoint: EndpointSummary, item: dict) -> None:
+    path = endpoint.path.lower()
+    method = endpoint.method.upper()
+    if method == "POST" and "cart" in path and is_positive_case(item):
+        body = request.get("body") if isinstance(request.get("body"), dict) else {}
+        body["productId"] = body.get("productId") or "{{customProductId}}"
+        body["quantity"] = int(body.get("quantity") or 2)
+        request["body"] = body
+    if method == "POST" and "checkout" in path and is_positive_case(item):
+        request["body"] = None
+    if method == "GET" and "order" in path:
+        request["body"] = None
+    if method == "DELETE" and "cart" in path:
+        request["body"] = None
+
+
+def is_positive_case(item: dict) -> bool:
+    name = str(item.get("name", "")).lower()
+    category = str(item.get("category", "")).lower()
+    negative_words = ("missing", "invalid", "malformed", "injection", "idor", "boundary", "unauthorized", "forbidden", "empty")
+    return category == "functional" and not any(word in name for word in negative_words)
+
+
+def is_missing_auth_case(item: dict) -> bool:
+    name = str(item.get("name", "")).lower()
+    return "missing authentication" in name or "without token" in name or "no token" in name
+
+
+def remove_authorization(request: dict) -> None:
+    headers = request.setdefault("headers", {})
+    for key in list(headers.keys()):
+        if str(key).lower() == "authorization":
+            headers.pop(key, None)
+
+
 def ensure_bearer_header(request: dict) -> None:
     headers = request.setdefault("headers", {})
     current = str(headers.get("Authorization") or headers.get("authorization") or "")
     if not current or current.strip() == "Bearer":
-        headers["Authorization"] = "Bearer {{token}}"
+        headers["Authorization"] = "Bearer {{accessToken}}"
 
 
-def with_bearer(headers: dict) -> dict:
+def with_bearer(headers: dict, token_name: str = "token") -> dict:
     next_headers = headers.copy() if isinstance(headers, dict) else {}
     current = str(next_headers.get("Authorization") or next_headers.get("authorization") or "")
     if not current or current.strip() == "Bearer":
-        next_headers["Authorization"] = "Bearer {{token}}"
+        next_headers["Authorization"] = f"Bearer {{{{{token_name}}}}}"
     return next_headers
 
 
@@ -242,6 +410,29 @@ def ensure_checkout_body(request: dict) -> None:
         body["cartId"] = "{{cartId}}"
 
 
+def register_body() -> dict:
+    return {
+        "email": "{{dynamicEmail}}",
+        "password": "{{dynamicPassword}}",
+        "firstName": "{{dynamicFirstName}}",
+        "lastName": "{{dynamicLastName}}",
+    }
+
+
+def user_login_body() -> dict:
+    return {"email": "{{dynamicEmail}}", "password": "{{dynamicPassword}}"}
+
+
+def product_body() -> dict:
+    return {
+        "name": "{{dynamicProductName}}",
+        "price": 149.99,
+        "category": "Electronics",
+        "stock": 10,
+        "description": "An amazing QA creation",
+    }
+
+
 def prepend_unique_step(steps: list[dict], step: dict) -> None:
     if not has_step(steps, step):
         steps.insert(0, step)
@@ -250,6 +441,36 @@ def prepend_unique_step(steps: list[dict], step: dict) -> None:
 def append_unique_step(steps: list[dict], step: dict) -> None:
     if not has_step(steps, step):
         steps.append(step)
+
+
+def upsert_step(steps: list[dict], step: dict) -> None:
+    for index, item in enumerate(steps):
+        if item.get("method") == step.get("method") and normalize_path(str(item.get("path", ""))) == normalize_path(str(step.get("path", ""))):
+            merged = item.copy()
+            merged.update(step)
+            steps[index] = merged
+            return
+    steps.append(step)
+
+
+def ensure_auth_prefix(steps: list[dict], auth_steps: list[dict]) -> None:
+    rest = [step for step in steps if not any(step.get("method") == auth.get("method") and normalize_path(str(step.get("path", ""))) == normalize_path(str(auth.get("path", ""))) for auth in auth_steps)]
+    steps[:] = auth_steps + rest
+
+
+def insert_after_auth(steps: list[dict], step: dict) -> None:
+    if any(
+        item.get("method") == step.get("method")
+        and normalize_path(str(item.get("path", ""))) == normalize_path(str(step.get("path", "")))
+        and item.get("name") == step.get("name")
+        for item in steps
+    ):
+        return
+    last_auth_index = -1
+    for index, item in enumerate(steps):
+        if normalize_path(str(item.get("path", ""))) in {"/auth/register", "/auth/login"}:
+            last_auth_index = index
+    steps.insert(last_auth_index + 1 if last_auth_index >= 0 else 0, step)
 
 
 def has_step(steps: list[dict], step: dict) -> bool:

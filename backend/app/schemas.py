@@ -39,7 +39,7 @@ class RunCreate(BaseModel):
     base_url_override: str | None = None
     test_intensity: str = "standard"
     timeout_seconds: int = Field(default=20, ge=1, le=120)
-    concurrency: int = Field(default=6, ge=1, le=25)
+    concurrency: int = Field(default=2, ge=1, le=25)
     slack_webhook: HttpUrl | None = None
     custom_base_url: str | None = None
 

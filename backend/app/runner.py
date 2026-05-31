@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -23,9 +24,12 @@ async def run_generated_tests(
     concurrency: int,
 ) -> None:
     semaphore = asyncio.Semaphore(concurrency)
+    shared_context = initial_context()
+    setup_cache: dict[str, dict] = {}
+    setup_lock = asyncio.Lock()
     async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False) as client:
         tasks = [
-            execute_one(run.id, test, client, semaphore, base_url_override)
+            execute_one(run.id, test, client, semaphore, base_url_override, shared_context, setup_cache, setup_lock)
             for test in generated_tests
         ]
         await asyncio.gather(*tasks)
@@ -37,16 +41,19 @@ async def execute_one(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
     base_url_override: str | None,
+    shared_context: dict[str, str] | None = None,
+    setup_cache: dict[str, dict] | None = None,
+    setup_lock: asyncio.Lock | None = None,
 ) -> models.TestResult:
     async with semaphore:
         override = json.loads(test.request_override_json)
         dependencies = normalize_dependencies(override.get("dependencies"))
-        context: dict[str, str] = {}
+        context: dict[str, str] = dict(shared_context or initial_context())
         before_results: list[dict] = []
         after_results: list[dict] = []
         dependency_failed = False
         for step in dependencies.get("before", []) or []:
-            step_result = await execute_dependency_step(client, base_url_override, step, context)
+            step_result = await execute_dependency_step(client, base_url_override, step, context, shared_context, setup_cache, setup_lock)
             before_results.append(step_result)
             if step_result.get("error") or int(step_result.get("status") or 0) >= 400:
                 dependency_failed = True
@@ -124,7 +131,35 @@ def build_url(base_url: str | None, path: str) -> str:
     return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
 
 
-async def execute_dependency_step(client: httpx.AsyncClient, base_url: str | None, step: dict, context: dict[str, str]) -> dict:
+async def execute_dependency_step(
+    client: httpx.AsyncClient,
+    base_url: str | None,
+    step: dict,
+    context: dict[str, str],
+    shared_context: dict[str, str] | None = None,
+    setup_cache: dict[str, dict] | None = None,
+    setup_lock: asyncio.Lock | None = None,
+) -> dict:
+    cache_key = setup_cache_key(step)
+    if cache_key and setup_cache is not None and setup_lock is not None:
+        async with setup_lock:
+            cached = setup_cache.get(cache_key)
+            if cached:
+                context.update(cached.get("context", {}))
+                record = json.loads(json.dumps(cached["record"]))
+                record["cached"] = True
+                return record
+            record = await execute_dependency_step_uncached(client, base_url, step, context)
+            if int(record.get("status") or 0) < 400 and not record.get("error"):
+                shared_values = pick_shared_context(context)
+                if shared_context is not None:
+                    shared_context.update(shared_values)
+                setup_cache[cache_key] = {"record": record, "context": shared_values}
+            return record
+    return await execute_dependency_step_uncached(client, base_url, step, context)
+
+
+async def execute_dependency_step_uncached(client: httpx.AsyncClient, base_url: str | None, step: dict, context: dict[str, str]) -> dict:
     resolved = render_template(step, context)
     method = str(resolved.get("method", "GET")).upper()
     path = str(resolved.get("path", "/"))
@@ -132,17 +167,59 @@ async def execute_dependency_step(client: httpx.AsyncClient, base_url: str | Non
     headers = ensure_dict(resolved.get("headers"))
     query = ensure_dict(resolved.get("query"))
     body = resolved.get("body")
-    record = {"name": resolved.get("name") or f"{method} {path}", "method": method, "url": url, "status": None, "extracts": {}}
+    record = {
+        "name": resolved.get("name") or f"{method} {path}",
+        "method": method,
+        "url": url,
+        "status": None,
+        "extracts": {},
+        "request": redact({"method": method, "url": url, "headers": headers, "query": query, "body": body}),
+        "response": {"status": None, "headers": {}, "body": ""},
+    }
     if not base_url:
         record["error"] = "No base URL supplied"
         return record
     try:
         response = await client.request(method, url, headers=headers, params=query, json=body if method not in {"GET", "HEAD"} else None)
         record["status"] = response.status_code
+        record["response"] = {
+            "status": response.status_code,
+            "headers": redact(dict(response.headers)),
+            "body": response.text[:4000],
+        }
         extract_values(response, ensure_dict(resolved.get("extract")), context, record["extracts"])
     except Exception as exc:
         record["error"] = exc.__class__.__name__
+        record["response"] = {"status": None, "headers": {}, "body": str(exc)}
     return record
+
+
+def setup_cache_key(step: dict) -> str | None:
+    name = str(step.get("name") or "").lower()
+    method = str(step.get("method") or "").upper()
+    path = str(step.get("path") or "")
+    if name in {"register dynamic user", "login and capture auth token", "login as admin", "create product for checkout"}:
+        return f"{method} {path} {name}"
+    return None
+
+
+def pick_shared_context(context: dict[str, str]) -> dict[str, str]:
+    keys = {
+        "dynamicEmail",
+        "dynamicPassword",
+        "dynamicFirstName",
+        "dynamicLastName",
+        "dynamicProductName",
+        "token",
+        "accessToken",
+        "access_token",
+        "refreshToken",
+        "adminAccessToken",
+        "customProductId",
+        "productId",
+        "firstProductId",
+    }
+    return {key: value for key, value in context.items() if key in keys}
 
 
 def render_template(value, context: dict[str, str]):
@@ -170,6 +247,17 @@ def ensure_dict(value) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def initial_context() -> dict[str, str]:
+    suffix = uuid.uuid4().hex
+    return {
+        "dynamicEmail": f"aeroapi_{suffix}@example.com",
+        "dynamicPassword": f"Pass123!{suffix[-8:]}",
+        "dynamicFirstName": "Aero",
+        "dynamicLastName": "Tester",
+        "dynamicProductName": f"AeroAPI Test Product {suffix}",
+    }
+
+
 def extract_values(response: httpx.Response, extract: dict, context: dict[str, str], recorded: dict) -> None:
     payload = None
     for key, path in extract.items():
@@ -186,9 +274,20 @@ def extract_values(response: httpx.Response, extract: dict, context: dict[str, s
         if value is not None:
             context[str(key)] = str(value)
             recorded[str(key)] = str(value)
-            if str(key) == "access_token" and "token" not in context:
+            if str(key) in {"access_token", "accessToken"} and "token" not in context:
                 context["token"] = str(value)
                 recorded["token"] = str(value)
+            if str(key) == "token" and "accessToken" not in context:
+                context["accessToken"] = str(value)
+                recorded["accessToken"] = str(value)
+            if str(key) in {"customProductId", "productId", "firstProductId"}:
+                for alias in ("customProductId", "productId", "firstProductId"):
+                    context.setdefault(alias, str(value))
+                    recorded.setdefault(alias, str(value))
+            if str(key) in {"latestOrderId", "orderId"}:
+                for alias in ("latestOrderId", "orderId"):
+                    context.setdefault(alias, str(value))
+                    recorded.setdefault(alias, str(value))
             if str(key) in {"cartId", "cart_id", "cartItemId"} and "id" not in context:
                 context["id"] = str(value)
                 recorded["id"] = str(value)
@@ -197,17 +296,30 @@ def extract_values(response: httpx.Response, extract: dict, context: dict[str, s
             payload = response.json()
         except ValueError:
             payload = {}
-        for key in ("token", "access_token", "cartId", "cart_id", "checkoutId", "orderId", "id"):
+        for key in ("token", "accessToken", "access_token", "cartId", "cart_id", "checkoutId", "orderId", "latestOrderId", "id"):
             value = payload.get(key) if isinstance(payload, dict) else None
             if value is not None:
                 context[key] = str(value)
                 recorded[key] = str(value)
-                if key == "access_token" and "token" not in context:
+                if key in {"access_token", "accessToken"} and "token" not in context:
                     context["token"] = str(value)
                     recorded["token"] = str(value)
+                if key == "token" and "accessToken" not in context:
+                    context["accessToken"] = str(value)
+                    recorded["accessToken"] = str(value)
                 if key in {"cartId", "cart_id", "cartItemId"} and "id" not in context:
                     context["id"] = str(value)
                     recorded["id"] = str(value)
+        nested_product_id = read_json_path(payload, "$.product.id")
+        if nested_product_id is not None:
+            for alias in ("customProductId", "productId", "firstProductId"):
+                context.setdefault(alias, str(nested_product_id))
+                recorded.setdefault(alias, str(nested_product_id))
+        nested_order_id = read_json_path(payload, "$.orderId")
+        if nested_order_id is not None:
+            for alias in ("latestOrderId", "orderId"):
+                context.setdefault(alias, str(nested_order_id))
+                recorded.setdefault(alias, str(nested_order_id))
 
 
 def read_json_path(payload, path: str):
@@ -217,6 +329,9 @@ def read_json_path(payload, path: str):
     for part in path[2:].split("."):
         if isinstance(current, dict):
             current = current.get(part)
+        elif isinstance(current, list) and part.isdigit():
+            index = int(part)
+            current = current[index] if 0 <= index < len(current) else None
         else:
             return None
     return current

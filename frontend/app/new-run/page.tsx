@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, DragEvent, FormEvent, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, ChevronDown, FileJson, FileText, KeyRound, Play, SlidersHorizontal, Upload } from "lucide-react";
@@ -14,6 +14,8 @@ const providerModels: Record<string, string[]> = {
   "openai-compatible": ["gpt-4o-mini", "gpt-4.1-mini"],
   custom: ["custom-model"]
 };
+
+const savedRunInfoKey = "aeroapi.newRun.savedInfo";
 
 type UploadResponse = {
   collection_id: number;
@@ -36,8 +38,9 @@ export default function NewRunPage() {
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [intensity, setIntensity] = useState("standard");
   const [timeout, setTimeoutValue] = useState(20);
-  const [concurrency, setConcurrency] = useState(6);
+  const [concurrency, setConcurrency] = useState(2);
   const [executionOpen, setExecutionOpen] = useState(false);
+  const [autoSaveInfo, setAutoSaveInfo] = useState(false);
   const [warningOpen, setWarningOpen] = useState(false);
   const [uploadPreview, setUploadPreview] = useState<UploadResponse | null>(null);
   const [error, setError] = useState("");
@@ -52,6 +55,46 @@ export default function NewRunPage() {
   const docsStateClass = docFile || apiDocs.trim()
     ? "border-emerald-400 bg-emerald-50 text-emerald-950"
     : "border-line bg-white text-slate-700";
+
+  useEffect(() => {
+    const saved = localStorage.getItem(savedRunInfoKey);
+    if (!saved) return;
+    try {
+      const parsed = JSON.parse(saved) as Partial<SavedRunInfo>;
+      if (parsed.provider && providerModels[parsed.provider]) setProvider(parsed.provider);
+      if (parsed.model) setModel(parsed.model);
+      if (parsed.token) setToken(parsed.token);
+      if (parsed.baseUrl) setBaseUrl(parsed.baseUrl);
+      if (parsed.slackWebhook) setSlackWebhook(parsed.slackWebhook);
+      if (parsed.customBaseUrl) setCustomBaseUrl(parsed.customBaseUrl);
+      if (parsed.intensity) setIntensity(parsed.intensity);
+      if (parsed.timeout) setTimeoutValue(parsed.timeout);
+      if (parsed.concurrency) setConcurrency(parsed.concurrency);
+      if (parsed.apiDocs) setApiDocs(parsed.apiDocs);
+      setAutoSaveInfo(true);
+    } catch {
+      localStorage.removeItem(savedRunInfoKey);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!autoSaveInfo) return;
+    localStorage.setItem(
+      savedRunInfoKey,
+      JSON.stringify({
+        provider,
+        model,
+        token,
+        baseUrl,
+        slackWebhook,
+        customBaseUrl,
+        intensity,
+        timeout,
+        concurrency,
+        apiDocs
+      } satisfies SavedRunInfo)
+    );
+  }, [apiDocs, autoSaveInfo, baseUrl, concurrency, customBaseUrl, intensity, model, provider, slackWebhook, timeout, token]);
 
   function setCollection(file: File | null) {
     setCollectionFile(file);
@@ -94,6 +137,25 @@ export default function NewRunPage() {
     }
     setSubmitting(true);
     try {
+      if (autoSaveInfo) {
+        localStorage.setItem(
+          savedRunInfoKey,
+          JSON.stringify({
+            provider,
+            model,
+            token,
+            baseUrl,
+            slackWebhook,
+            customBaseUrl,
+            intensity,
+            timeout,
+            concurrency,
+            apiDocs
+          } satisfies SavedRunInfo)
+        );
+      } else {
+        localStorage.removeItem(savedRunInfoKey);
+      }
       const form = new FormData();
       form.append("collection_file", collectionFile);
       if (envFile) form.append("env_file", envFile);
@@ -210,6 +272,21 @@ export default function NewRunPage() {
               <input className="w-full text-sm outline-none" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Stored only in job memory" />
             </div>
           </Field>
+          <label className="flex items-start gap-2 rounded border border-line bg-panel p-3 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 rounded border-line text-sky-700"
+              checked={autoSaveInfo}
+              onChange={(event) => {
+                setAutoSaveInfo(event.target.checked);
+                if (!event.target.checked) localStorage.removeItem(savedRunInfoKey);
+              }}
+            />
+            <span>
+              <span className="block font-medium text-ink">Auto save for next run</span>
+              <span className="mt-0.5 block text-xs text-slate-500">Saves provider, model, token, URLs, docs, and execution settings in this browser.</span>
+            </span>
+          </label>
         </section>
 
         <section className="space-y-4 rounded border border-line bg-white p-5 shadow-soft transition duration-200 hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-[0_14px_32px_rgba(16,185,129,0.12)]">
@@ -285,3 +362,16 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     </label>
   );
 }
+
+type SavedRunInfo = {
+  provider: string;
+  model: string;
+  token: string;
+  baseUrl: string;
+  slackWebhook: string;
+  customBaseUrl: string;
+  intensity: string;
+  timeout: number;
+  concurrency: number;
+  apiDocs: string;
+};
