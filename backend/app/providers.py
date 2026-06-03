@@ -33,6 +33,7 @@ Put positive functional tests first. Cover as many valid combinations as possibl
 Then include validation, security, regression, and edge cases. Security cases should include SQLi, IDOR, auth bypass, ORM bypass, malformed payloads, and boundary values where relevant.
 Add business-oriented cases when the documentation describes workflows, roles, statuses, limits, or domain rules.
 If an endpoint requires workflow setup, include dependency steps. For example, login before cart/checkout, create cart before checkout, create resource before update/delete, cleanup after mutation. Extract values from dependency responses and reference them with {{token}}, {{cartId}}, {{orderId}}, etc.
+Business dependency values are mandatory in setup requests: if a prior step creates or fetches a product, extract its id as customProductId/productId and use it in every cart setup body as {{"productId":"{{customProductId}}","quantity":1}}. Never leave required dependency fields blank, null, undefined, or as placeholder example values when a previous step can produce the real value.
 Never invent dependency endpoints. Use only endpoints listed in the available collection endpoints. If a needed setup endpoint is missing, do not add that dependency; generate a direct test with a clear reasoning note.
 Use this exact shape:
 {{"endpoint":"METHOD /path","tests":[{{"name":"...","category":"functional|security|edge|regression","severity":"critical|high|medium|low|info","request":{{"method":"...","path":"...","headers":{{}},"query":{{}},"body":{{}},"dependencies":{{"before":[{{"name":"login","method":"POST","path":"/auth/login","headers":{{}},"query":{{}},"body":{{}},"extract":{{"token":"$.token"}}}}],"after":[{{"name":"cleanup","method":"DELETE","path":"/cart/{{cartId}}","headers":{{"Authorization":"Bearer {{token}}"}},"query":{{}},"body":null}}]}}}},"expected":{{"status_codes":[200],"behavior":"..."}},"reasoning":"..."}}]}}
@@ -128,6 +129,22 @@ class DeterministicProvider(LLMProvider):
                 "reasoning": "Looks for classic SQL injection acceptance or unexpected success.",
             },
             {
+                "name": "Invalid bearer token rejection",
+                "category": "security",
+                "severity": "high",
+                "request": {"method": endpoint.method, "path": endpoint.path, "headers": endpoint.headers | {"Authorization": "Bearer aeroapi.invalid.token"}, "query": valid_query, "body": body},
+                "expected": {"status_codes": [401, 403], "behavior": "Endpoint rejects forged or malformed bearer tokens."},
+                "reasoning": "Checks that authentication middleware validates token integrity instead of accepting any bearer value.",
+            },
+            {
+                "name": "Privilege escalation role override",
+                "category": "security",
+                "severity": "high",
+                "request": {"method": endpoint.method, "path": endpoint.path, "headers": endpoint.headers | {"X-User-Role": "admin"}, "query": valid_query | {"role": "admin", "isAdmin": "true"}, "body": mutate_body(body, {"role": "admin", "isAdmin": True})},
+                "expected": {"status_codes": [400, 401, 403, 422], "behavior": "User-controlled role fields do not grant elevated permissions."},
+                "reasoning": "Covers basic authorization bypass attempts through headers, query params, and payload fields.",
+            },
+            {
                 "name": "Malformed payload",
                 "category": "edge",
                 "severity": "low",
@@ -142,6 +159,38 @@ class DeterministicProvider(LLMProvider):
                 "request": {"method": endpoint.method, "path": endpoint.path.replace("{{id}}", "999999").replace(":id", "999999"), "headers": {}, "query": {"id": "999999"}, "body": mutate_body(body, "999999")},
                 "expected": {"status_codes": [401, 403, 404], "behavior": "Endpoint does not expose unauthorized resources."},
                 "reasoning": "Attempts access to a likely resource identifier outside the user's scope.",
+            },
+            {
+                "name": "Sensitive field exposure regression",
+                "category": "regression",
+                "severity": "medium",
+                "request": {"method": endpoint.method, "path": endpoint.path, "headers": endpoint.headers, "query": valid_query, "body": body},
+                "expected": {"status_codes": [200, 201, 202, 204], "behavior": "Successful responses do not expose password, token secrets, or internal implementation fields."},
+                "reasoning": "Locks in a common privacy and serialization expectation so future runs can flag regressions.",
+            },
+            {
+                "name": "Reflected script payload",
+                "category": "security",
+                "severity": "medium",
+                "request": {"method": endpoint.method, "path": endpoint.path, "headers": {}, "query": {"search": "<script>alert(1)</script>"}, "body": mutate_body(body, "<script>alert(1)</script>")},
+                "expected": {"status_codes": [400, 401, 403, 422], "behavior": "Endpoint rejects, encodes, or safely stores script-like input."},
+                "reasoning": "Checks basic reflected/stored XSS input handling for APIs that echo user-controlled fields.",
+            },
+            {
+                "name": "Path traversal input",
+                "category": "security",
+                "severity": "medium",
+                "request": {"method": endpoint.method, "path": endpoint.path, "headers": {}, "query": {"file": "../../etc/passwd"}, "body": mutate_body(body, "../../etc/passwd")},
+                "expected": {"status_codes": [400, 401, 403, 404, 422], "behavior": "Endpoint does not resolve traversal-style user input."},
+                "reasoning": "Covers file/path handling mistakes that can appear in import, export, image, and document APIs.",
+            },
+            {
+                "name": "Mass assignment payload",
+                "category": "security",
+                "severity": "medium",
+                "request": {"method": endpoint.method, "path": endpoint.path, "headers": {}, "query": {}, "body": mass_assignment_body(body)},
+                "expected": {"status_codes": [400, 401, 403, 422], "behavior": "Server ignores or rejects protected fields submitted by the client."},
+                "reasoning": "Checks whether clients can set server-owned fields such as role, owner, verification, or price controls.",
             },
             {
                 "name": "Boundary value input",
@@ -170,6 +219,22 @@ class DeterministicProvider(LLMProvider):
                         "request": {"method": "PATCH" if endpoint.method != "PATCH" else "DELETE", "path": endpoint.path, "headers": {}, "query": {}, "body": body},
                         "expected": {"status_codes": [400, 401, 403, 405], "behavior": "Unexpected methods are blocked."},
                         "reasoning": "Checks whether alternate verbs expose unintended behavior.",
+                    },
+                    {
+                        "name": "Prototype pollution payload",
+                        "category": "security",
+                        "severity": "medium",
+                        "request": {"method": endpoint.method, "path": endpoint.path, "headers": {}, "query": {}, "body": {"__proto__": {"isAdmin": True}, "constructor": {"prototype": {"polluted": True}}}},
+                        "expected": {"status_codes": [400, 401, 403, 422], "behavior": "Server rejects prototype-shaped object keys."},
+                        "reasoning": "Covers medium-depth object injection issues in JavaScript-backed APIs.",
+                    },
+                    {
+                        "name": "Oversized nested payload",
+                        "category": "security",
+                        "severity": "medium",
+                        "request": {"method": endpoint.method, "path": endpoint.path, "headers": {}, "query": {"limit": "1000000"}, "body": {"items": [{"value": "A" * 256} for _ in range(16)]}},
+                        "expected": {"status_codes": [400, 401, 403, 413, 422], "behavior": "Server enforces request size, nesting, and collection limits."},
+                        "reasoning": "Checks for resource exhaustion risks without requiring an aggressive load test.",
                     },
                 ]
             )
@@ -280,6 +345,21 @@ def enriched_body(body: dict) -> dict:
         return {"name": "AeroAPI Valid Case", "description": "Generated positive test payload"}
     clone = json.loads(json.dumps(body))
     clone.setdefault("description", "Generated positive test payload")
+    return clone
+
+
+def mass_assignment_body(body: dict) -> dict:
+    clone = json.loads(json.dumps(body)) if body else {"name": "AeroAPI mass assignment check"}
+    clone.update(
+        {
+            "id": 1,
+            "role": "admin",
+            "isAdmin": True,
+            "ownerId": "another-user",
+            "emailVerified": True,
+            "price": 0,
+        }
+    )
     return clone
 
 

@@ -163,6 +163,7 @@ async def execute_dependency_step_uncached(client: httpx.AsyncClient, base_url: 
     resolved = render_template(step, context)
     method = str(resolved.get("method", "GET")).upper()
     path = str(resolved.get("path", "/"))
+    repair_cart_body(resolved, method, path, context)
     url = build_url(base_url, path)
     headers = ensure_dict(resolved.get("headers"))
     query = ensure_dict(resolved.get("query"))
@@ -245,6 +246,24 @@ def normalize_dependencies(value) -> dict[str, list[dict]]:
 
 def ensure_dict(value) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def repair_cart_body(request: dict, method: str, path: str, context: dict[str, str]) -> None:
+    if method != "POST" or normalize_path(path) != "/cart":
+        return
+    body = request.get("body") if isinstance(request.get("body"), dict) else {}
+    product_id = body.get("productId") or body.get("product_id")
+    if not product_id or str(product_id).strip().lower() in {"undefined", "null", "none"}:
+        fallback = context.get("customProductId") or context.get("productId") or context.get("firstProductId")
+        if fallback:
+            body["productId"] = fallback
+    if "quantity" not in body or body.get("quantity") in {"", None}:
+        body["quantity"] = 1
+    request["body"] = body
+
+
+def normalize_path(path: str) -> str:
+    return path.split("?", 1)[0].rstrip("/") or "/"
 
 
 def initial_context() -> dict[str, str]:

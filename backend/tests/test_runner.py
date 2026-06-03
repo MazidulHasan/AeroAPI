@@ -1,4 +1,7 @@
-from app.runner import extract_values, normalize_dependencies, read_json_path, render_template
+import asyncio
+
+from app.providers import DeterministicProvider
+from app.runner import extract_values, normalize_dependencies, read_json_path, repair_cart_body, render_template
 import httpx
 from app.schemas import EndpointReference, EndpointSummary
 from app.test_generation import normalize_request
@@ -84,6 +87,64 @@ def test_checkout_request_gets_collection_workflow_dependencies():
     assert request["dependencies"]["after"][0]["path"] == "/cart/{id}"
     assert request["headers"]["Authorization"] == "Bearer {{accessToken}}"
     assert "cartId" not in request["body"]
+
+
+def test_checkout_dependency_repairs_blank_cart_product_id():
+    request = normalize_request(
+        {
+            "request": {
+                "method": "POST",
+                "path": "/checkout",
+                "headers": {},
+                "body": {},
+            }
+        },
+        [
+            EndpointReference(name="Login", method="POST", path="/auth/login"),
+            EndpointReference(name="Create product", method="POST", path="/products"),
+            EndpointReference(name="Add to cart", method="POST", path="/cart", body={"productId": "", "quantity": 1}),
+            EndpointReference(name="Checkout", method="POST", path="/checkout"),
+        ],
+        EndpointSummary(name="Checkout", method="POST", path="/checkout", url="/checkout", auth_type="bearer", headers={}, params={}, body={}),
+    )
+
+    cart_step = next(step for step in request["dependencies"]["before"] if step["path"] == "/cart")
+    assert cart_step["body"]["productId"] == "{{customProductId}}"
+    assert cart_step["body"]["quantity"] == 1
+
+
+def test_ai_supplied_cart_dependency_repairs_blank_product_id():
+    request = normalize_request(
+        {
+            "request": {
+                "method": "GET",
+                "path": "/orders",
+                "headers": {},
+                "dependencies": {
+                    "before": [
+                        {"name": "Create or add cart item", "method": "POST", "path": "/cart", "body": {"productId": "", "quantity": 2}},
+                    ]
+                },
+            }
+        },
+        [
+            EndpointReference(name="Add to cart", method="POST", path="/cart", body={"productId": "", "quantity": 2}),
+            EndpointReference(name="Orders", method="GET", path="/orders"),
+        ],
+        EndpointSummary(name="Orders", method="GET", path="/orders", url="/orders", auth_type="bearer", headers={}, params={}, body={}),
+    )
+
+    cart_step = next(step for step in request["dependencies"]["before"] if step["path"] == "/cart")
+    assert cart_step["body"]["productId"] == "{{customProductId}}"
+    assert cart_step["body"]["quantity"] == 2
+
+
+def test_runner_repairs_stored_blank_cart_product_id():
+    request = {"body": {"productId": "", "quantity": 2}}
+
+    repair_cart_body(request, "POST", "/cart", {"customProductId": "prod-1"})
+
+    assert request["body"] == {"productId": "prod-1", "quantity": 2}
 
 
 def test_authenticated_dependency_steps_receive_bearer_header():
@@ -185,3 +246,38 @@ def test_missing_auth_case_drops_dependencies_and_authorization():
 
     assert request["dependencies"] == {"before": [], "after": []}
     assert "Authorization" not in request["headers"]
+
+
+def test_deterministic_provider_generates_basic_to_medium_security_coverage():
+    endpoint = EndpointSummary(
+        name="Update profile",
+        method="POST",
+        path="/profile/{id}",
+        url="/profile/{id}",
+        auth_type="bearer",
+        headers={"Authorization": "Bearer {{accessToken}}"},
+        params={},
+        body={"email": "user@example.com", "name": "Aero"},
+    )
+
+    generated = asyncio.run(DeterministicProvider("demo", "demo").generate_tests(endpoint, "deep"))
+    tests = generated["tests"]
+    names = {item["name"] for item in tests}
+    security_names = {item["name"] for item in tests if item["category"] == "security"}
+
+    assert len(tests) >= 16
+    assert "Sensitive field exposure regression" in names
+    assert {
+        "Missing authentication",
+        "Invalid bearer token rejection",
+        "Privilege escalation role override",
+        "SQL injection probe",
+        "IDOR identifier mutation",
+        "Reflected script payload",
+        "Path traversal input",
+        "Mass assignment payload",
+        "ORM bypass object payload",
+        "HTTP method tampering",
+        "Prototype pollution payload",
+        "Oversized nested payload",
+    }.issubset(security_names)

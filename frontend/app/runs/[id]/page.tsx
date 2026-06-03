@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { ChevronDown, Download, GitBranch, RefreshCcw, Send, StopCircle } from "lucide-react";
+import { ChevronDown, Download, FileText, GitBranch, RefreshCcw, Send, StopCircle } from "lucide-react";
 import { API_BASE, apiFetch, ResultRow, RunSummary } from "@/lib/api";
 import { SeverityBadge, StatusBadge } from "@/components/badges";
 
@@ -160,9 +160,9 @@ export default function RunDetailPage() {
       </section>
 
       <section className="flex flex-wrap items-center gap-3 rounded border border-line bg-white p-4 shadow-soft">
-        <a href={`${API_BASE}/api/runs/${runId}/export/html`} className="inline-flex items-center gap-2 rounded bg-ink px-3 py-2 text-sm font-medium text-white"><Download size={16} /> HTML</a>
-        <a href={`${API_BASE}/api/runs/${runId}/export/csv`} className="inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm"><Download size={16} /> CSV</a>
-        <a href={`${API_BASE}/api/runs/${runId}/export/postman`} className="inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm"><Download size={16} /> Postman collection</a>
+        <a href={`${API_BASE}/api/runs/${runId}/export/html`} className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-sky-700"><FileText size={16} /> Report</a>
+        <a href={`${API_BASE}/api/runs/${runId}/export/csv`} className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-sky-700"><Download size={16} /> CSV</a>
+        <a href={`${API_BASE}/api/runs/${runId}/export/postman`} className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-sky-700"><Download size={16} /> Postman collection</a>
         <input className="min-w-80 rounded border border-line px-3 py-2 text-sm" value={slackWebhook} onChange={(e) => setSlackWebhook(e.target.value)} placeholder="Slack webhook URL" />
         <button onClick={sendSlack} className="inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm"><Send size={16} /> Send Slack alert</button>
         {message && <span className="text-sm text-emerald-700">{message}</span>}

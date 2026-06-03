@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models
 from app.database import Base
-from app.reports import render_postman_collection
+from app.reports import render_html_report, render_postman_collection
 
 
 def test_render_postman_collection_includes_scripts():
@@ -104,4 +104,72 @@ def test_render_postman_collection_exports_dependency_folder():
     assert [item["name"] for item in case_folder["item"]] == ["Login", "Create cart", "INFO - Checkout with cart token", "Delete cart"]
     setup_script = "\n".join(case_folder["item"][0]["event"][1]["script"]["exec"])
     assert "pm.collectionVariables.set('token'" in setup_script
+    session.close()
+
+
+def test_render_html_report_escapes_evidence_and_explains_security_counts():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    project = models.Project(name="Demo", base_url="https://api.example.com")
+    collection = models.Collection(project=project, name="Demo API", raw_json="{}", parsed_summary="{}")
+    endpoint = models.Endpoint(
+        collection=collection,
+        name="Search",
+        method="GET",
+        path="/search",
+        url="https://api.example.com/search",
+        headers_json="{}",
+        params_json="{}",
+        body_json="{}",
+    )
+    run = models.TestRun(
+        project=project,
+        collection=collection,
+        provider="demo",
+        model="demo",
+        status="completed",
+        total_tests=1,
+        completed_tests=1,
+        passed_count=1,
+        security_count=0,
+        regression_count=0,
+    )
+    session.add_all([project, collection, endpoint, run])
+    session.flush()
+    test = models.GeneratedTest(
+        test_run_id=run.id,
+        endpoint_id=endpoint.id,
+        name="Reflected script payload",
+        category="security",
+        severity="medium",
+        request_override_json=json.dumps({"method": "GET", "path": "/search", "query": {"q": "<script>alert(1)</script>"}}),
+        expected_behavior=json.dumps({"status_codes": [400], "behavior": "Rejects scripts"}),
+        ai_reasoning="Checks script-like input.",
+    )
+    session.add(test)
+    session.flush()
+    session.add(
+        models.TestResult(
+            test_run_id=run.id,
+            generated_test_id=test.id,
+            status="passed",
+            request_json=json.dumps({"main": {"query": {"q": "<script>alert(1)</script>"}}}),
+            response_status=400,
+            response_headers_json="{}",
+            response_body_preview="<script>alert(1)</script>",
+            latency_ms=12,
+            finding_summary="Security probe was rejected or constrained.",
+            suggested_fix="No action needed.",
+        )
+    )
+    session.commit()
+
+    report = render_html_report(session, run.id)
+
+    assert "1 security probe(s) ran" in report
+    assert "Security findings</span>" in report
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in report
+    assert "<script>alert(1)</script>" not in report
+    assert 'id="search"' in report
     session.close()

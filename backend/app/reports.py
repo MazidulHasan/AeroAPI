@@ -1,7 +1,9 @@
 import csv
+import html
 import io
 import json
 import re
+from collections import Counter
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -34,51 +36,174 @@ def collect_results(db: Session, run_id: int) -> list[dict]:
 def render_html_report(db: Session, run_id: int) -> str:
     run = db.get(models.TestRun, run_id)
     rows = collect_results(db, run_id)
-    body = "\n".join(
-        f"""
-        <section class="case {item['result'].status}">
-          <h2>{item['endpoint'].method} {item['endpoint'].path} - {item['test'].name}</h2>
-          <p><strong>Status:</strong> {item['result'].status} | <strong>Severity:</strong> {item['test'].severity} | <strong>Latency:</strong> {item['result'].latency_ms}ms</p>
-          <p>{item['result'].finding_summary}</p>
-          <h3>Request</h3><pre>{json.dumps(item['request'], indent=2)}</pre>
-          <h3>Response</h3><pre>HTTP {item['result'].response_status}\n{item['result'].response_body_preview}</pre>
-          <h3>Suggested fix</h3><p>{item['result'].suggested_fix}</p>
-        </section>
-        """
-        for item in rows
-    )
+    status_counts = Counter(item["result"].status for item in rows)
+    category_counts = Counter(item["test"].category for item in rows)
+    severity_counts = Counter(item["test"].severity for item in rows)
+    security_tests = category_counts.get("security", 0)
+    regression_tests = category_counts.get("regression", 0)
+    failure_rate = round((run.failed_count / run.completed_tests) * 100, 1) if run.completed_tests else 0
+    body = "\n".join(render_html_case(item) for item in rows)
     return f"""
     <!doctype html>
-    <html>
+    <html lang="en">
       <head>
         <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>AeroAPI Report #{run_id}</title>
         <style>
-          body {{ font-family: Inter, Arial, sans-serif; margin: 32px; color: #111827; }}
-          header {{ border-bottom: 1px solid #d1d5db; margin-bottom: 24px; }}
-          .summary {{ display: flex; gap: 16px; flex-wrap: wrap; }}
-          .metric {{ border: 1px solid #d1d5db; padding: 12px; min-width: 120px; }}
-          .case {{ border-top: 1px solid #e5e7eb; padding: 18px 0; }}
-          .failed h2, .error h2 {{ color: #b91c1c; }}
-          .warning h2 {{ color: #b45309; }}
-          pre {{ background: #111827; color: #f9fafb; padding: 12px; overflow-x: auto; }}
+          :root {{ color-scheme: light; --ink: #111827; --muted: #64748b; --line: #dbe3ee; --panel: #f8fafc; --ok: #047857; --bad: #b91c1c; --warn: #b45309; --info: #0369a1; }}
+          * {{ box-sizing: border-box; }}
+          body {{ margin: 0; background: #f3f7fb; color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }}
+          header {{ background: #ffffff; border-bottom: 1px solid var(--line); padding: 28px clamp(18px, 4vw, 48px); }}
+          main {{ padding: 24px clamp(18px, 4vw, 48px) 48px; }}
+          h1 {{ margin: 0; font-size: clamp(26px, 4vw, 40px); line-height: 1.1; letter-spacing: 0; }}
+          h2, h3 {{ margin: 0; letter-spacing: 0; }}
+          .muted {{ color: var(--muted); }}
+          .topline {{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }}
+          .badge {{ display: inline-flex; align-items: center; min-height: 28px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); padding: 4px 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; }}
+          .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }}
+          .metric {{ border: 1px solid var(--line); border-radius: 8px; background: #ffffff; padding: 14px; box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06); }}
+          .metric strong {{ display: block; margin-bottom: 4px; font-size: 26px; line-height: 1; }}
+          .metric span {{ color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }}
+          .insights, .toolbar, .case {{ border: 1px solid var(--line); border-radius: 8px; background: #ffffff; box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06); }}
+          .insights {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; padding: 16px; }}
+          .insight {{ border-left: 3px solid #38bdf8; padding-left: 12px; }}
+          .insight strong {{ display: block; margin-bottom: 4px; }}
+          .toolbar {{ position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(130px, 180px)); gap: 10px; margin-bottom: 16px; padding: 12px; }}
+          input, select {{ min-height: 40px; width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #ffffff; padding: 8px 10px; color: var(--ink); font: inherit; font-size: 14px; }}
+          .case {{ margin-bottom: 12px; overflow: hidden; }}
+          .case[hidden] {{ display: none; }}
+          .case-header {{ display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; border-bottom: 1px solid var(--line); padding: 14px; }}
+          .case-title {{ font-size: 15px; }}
+          .case-meta {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }}
+          .pill {{ border-radius: 999px; padding: 4px 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; }}
+          .passed {{ background: #dcfce7; color: #166534; }}
+          .failed, .error {{ background: #fee2e2; color: #991b1b; }}
+          .warning {{ background: #fef3c7; color: #92400e; }}
+          .info {{ background: #e0f2fe; color: #075985; }}
+          .case-body {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 14px; }}
+          .finding {{ grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
+          .note {{ border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 12px; }}
+          .note h3 {{ margin-bottom: 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; }}
+          pre {{ max-height: 360px; overflow: auto; border-radius: 8px; background: #0f172a; color: #e2e8f0; padding: 12px; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }}
+          @media (max-width: 840px) {{ .toolbar, .case-body {{ grid-template-columns: 1fr; }} .case-header {{ grid-template-columns: 1fr; }} }}
         </style>
       </head>
       <body>
         <header>
-          <h1>AeroAPI Report #{run_id}</h1>
+          <div class="topline">
+            <div>
+              <h1>AeroAPI Report #{run_id}</h1>
+              <p class="muted">Completed tests, findings, regression signal, and request/response evidence.</p>
+            </div>
+            <span class="badge">{h(run.status)}</span>
+          </div>
           <div class="summary">
-            <div class="metric">Status<br><strong>{run.status}</strong></div>
-            <div class="metric">Passed<br><strong>{run.passed_count}</strong></div>
-            <div class="metric">Failed<br><strong>{run.failed_count}</strong></div>
-            <div class="metric">Security<br><strong>{run.security_count}</strong></div>
-            <div class="metric">Regressions<br><strong>{run.regression_count}</strong></div>
+            <div class="metric"><strong>{run.completed_tests}/{run.total_tests}</strong><span>Executed</span></div>
+            <div class="metric"><strong>{run.passed_count}</strong><span>Passed</span></div>
+            <div class="metric"><strong>{run.failed_count}</strong><span>Failed</span></div>
+            <div class="metric"><strong>{run.security_count}</strong><span>Security findings</span></div>
+            <div class="metric"><strong>{run.regression_count}</strong><span>Regressions found</span></div>
+            <div class="metric"><strong>{failure_rate}%</strong><span>Failure rate</span></div>
           </div>
         </header>
-        {body}
+        <main>
+          <section class="insights">
+            <div class="insight"><strong>Security coverage</strong><span class="muted">{security_tests} security probe(s) ran. The security finding count only rises when one is accepted, warns, or fails.</span></div>
+            <div class="insight"><strong>Regression context</strong><span class="muted">{regression_tests} regression-oriented test(s) ran. A regression is counted when a test that passed in the previous completed run now fails.</span></div>
+            <div class="insight"><strong>Result mix</strong><span class="muted">{format_counter(status_counts) or "No result statuses recorded."}</span></div>
+            <div class="insight"><strong>Severity mix</strong><span class="muted">{format_counter(severity_counts) or "No severities recorded."}</span></div>
+          </section>
+          <section class="toolbar" aria-label="Report filters">
+            <input id="search" type="search" placeholder="Search endpoint, test, finding, fix" />
+            <select id="status"><option value="">All statuses</option>{options_for(status_counts)}</select>
+            <select id="category"><option value="">All categories</option>{options_for(category_counts)}</select>
+            <select id="severity"><option value="">All severities</option>{options_for(severity_counts)}</select>
+          </section>
+          <div id="resultCount" class="muted" style="margin: 0 0 12px 2px;">Showing {len(rows)} result(s)</div>
+          {body or '<section class="case"><div class="case-header"><h2 class="case-title">No results recorded yet</h2></div></section>'}
+        </main>
+        <script>
+          const controls = ["search", "status", "category", "severity"].map((id) => document.getElementById(id));
+          const cases = Array.from(document.querySelectorAll(".case[data-search]"));
+          const resultCount = document.getElementById("resultCount");
+          function applyFilters() {{
+            const [search, status, category, severity] = controls.map((control) => control.value.toLowerCase());
+            let visible = 0;
+            cases.forEach((item) => {{
+              const matches = (!search || item.dataset.search.includes(search))
+                && (!status || item.dataset.status === status)
+                && (!category || item.dataset.category === category)
+                && (!severity || item.dataset.severity === severity);
+              item.hidden = !matches;
+              if (matches) visible += 1;
+            }});
+            resultCount.textContent = `Showing ${{visible}} of ${{cases.length}} result(s)`;
+          }}
+          controls.forEach((control) => control.addEventListener("input", applyFilters));
+        </script>
       </body>
     </html>
     """
+
+
+def render_html_case(item: dict) -> str:
+    result = item["result"]
+    test = item["test"]
+    endpoint = item["endpoint"]
+    request = json.dumps(item["request"], indent=2)
+    response = f"HTTP {result.response_status if result.response_status is not None else '-'}\n{result.response_body_preview or ''}"
+    searchable = " ".join(
+        str(value)
+        for value in [
+            endpoint.method,
+            endpoint.path,
+            test.name,
+            test.category,
+            test.severity,
+            result.status,
+            result.finding_summary,
+            result.suggested_fix,
+            test.ai_reasoning,
+        ]
+    ).lower()
+    return f"""
+      <section class="case" data-status="{h(result.status.lower())}" data-category="{h(test.category.lower())}" data-severity="{h(test.severity.lower())}" data-search="{h(searchable)}">
+        <div class="case-header">
+          <div>
+            <h2 class="case-title">{h(endpoint.method)} {h(endpoint.path)} - {h(test.name)}</h2>
+            <div class="case-meta">
+              <span class="pill {h(result.status)}">{h(result.status)}</span>
+              <span class="pill info">{h(test.category)}</span>
+              <span class="pill info">{h(test.severity)}</span>
+              <span class="pill info">HTTP {h(result.response_status if result.response_status is not None else "-")}</span>
+              <span class="pill info">{h(result.latency_ms)}ms</span>
+            </div>
+          </div>
+        </div>
+        <div class="case-body">
+          <div><h3 class="muted">Request</h3><pre>{h(request)}</pre></div>
+          <div><h3 class="muted">Response</h3><pre>{h(response)}</pre></div>
+          <div class="finding">
+            <div class="note"><h3>Finding</h3><p>{h(result.finding_summary)}</p></div>
+            <div class="note"><h3>Suggested fix</h3><p>{h(result.suggested_fix)}</p></div>
+            <div class="note"><h3>Reasoning</h3><p>{h(test.ai_reasoning)}</p></div>
+          </div>
+        </div>
+      </section>
+    """
+
+
+def h(value) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def format_counter(counter: Counter) -> str:
+    return ", ".join(f"{key}: {value}" for key, value in sorted(counter.items()))
+
+
+def options_for(counter: Counter) -> str:
+    return "".join(f'<option value="{h(key)}">{h(key)} ({value})</option>' for key, value in sorted(counter.items()))
 
 
 def render_csv_report(db: Session, run_id: int) -> str:

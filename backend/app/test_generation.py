@@ -105,13 +105,18 @@ def normalize_request(
 
 
 def normalize_step(step: dict) -> dict:
+    method = str(step.get("method", "GET")).upper()
+    path = step.get("path", "/")
+    body = step.get("body")
+    if method == "POST" and normalize_path(str(path)) == "/cart":
+        body = ensure_cart_body(body)
     return {
         "name": step.get("name") or f"{step.get('method', 'GET')} {step.get('path', '/')}",
-        "method": str(step.get("method", "GET")).upper(),
-        "path": step.get("path", "/"),
+        "method": method,
+        "path": path,
         "headers": step.get("headers") if isinstance(step.get("headers"), dict) else {},
         "query": step.get("query") if isinstance(step.get("query"), dict) else {},
-        "body": step.get("body"),
+        "body": body,
         "extract": step.get("extract") if isinstance(step.get("extract"), dict) else {},
     }
 
@@ -306,6 +311,7 @@ def product_create_step(endpoint: EndpointReference) -> dict:
 
 
 def cart_step(endpoint: EndpointReference) -> dict:
+    body = ensure_cart_body(endpoint.body)
     return normalize_step(
         {
             "name": "Create or add cart item",
@@ -313,7 +319,7 @@ def cart_step(endpoint: EndpointReference) -> dict:
             "path": endpoint.path,
             "headers": with_bearer(endpoint.headers, "accessToken"),
             "query": endpoint.params,
-            "body": endpoint.body or {"productId": "{{customProductId}}", "quantity": 1},
+            "body": body,
             "extract": {
                 "cartId": "$.cartId",
                 "cart_id": "$.cart_id",
@@ -355,10 +361,7 @@ def apply_endpoint_defaults(request: dict, endpoint: EndpointSummary, item: dict
     path = endpoint.path.lower()
     method = endpoint.method.upper()
     if method == "POST" and "cart" in path and is_positive_case(item):
-        body = request.get("body") if isinstance(request.get("body"), dict) else {}
-        body["productId"] = body.get("productId") or "{{customProductId}}"
-        body["quantity"] = int(body.get("quantity") or 2)
-        request["body"] = body
+        request["body"] = ensure_cart_body(request.get("body"), quantity=2)
     if method == "POST" and "checkout" in path and is_positive_case(item):
         request["body"] = None
     if method == "GET" and "order" in path:
@@ -408,6 +411,16 @@ def ensure_checkout_body(request: dict) -> None:
         return
     if not any(str(key).lower() in {"cartid", "cart_id"} for key in body.keys()):
         body["cartId"] = "{{cartId}}"
+
+
+def ensure_cart_body(body, quantity: int = 1) -> dict:
+    next_body = body.copy() if isinstance(body, dict) else {}
+    product_id = next_body.get("productId") or next_body.get("product_id")
+    if not product_id or str(product_id).strip().lower() in {"undefined", "null", "none"}:
+        next_body["productId"] = "{{customProductId}}"
+    if "quantity" not in next_body or next_body.get("quantity") in {"", None}:
+        next_body["quantity"] = quantity
+    return next_body
 
 
 def register_body() -> dict:

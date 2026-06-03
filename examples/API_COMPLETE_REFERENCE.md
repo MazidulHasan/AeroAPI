@@ -51,6 +51,18 @@ Run all requests in this exact order for the full happy-path suite to pass:
 > - Admin account `admin@practice.com` / `password123` / role `admin` seeded in DB
 > - At least 1 product seeded in DB (for 03.1 ID extraction)
 
+### AI dependency rules for generated tests
+
+Use these rules when generating or repairing test flows:
+
+| Target request | Required setup before target | Required variable transfer |
+|----------------|------------------------------|----------------------------|
+| `POST /cart` | `POST /auth/register` -> `POST /auth/login`; then either `POST /auth/login` as admin -> `POST /products` or `GET /products` | Extract product id as `customProductId`, `productId`, and `firstProductId`; send cart body `{ "productId": "{{customProductId}}", "quantity": 1 }` or quantity `2` for checkout happy path |
+| `POST /checkout` | Register user -> user login -> admin login -> create product -> `DELETE /cart` -> `POST /cart` | `accessToken` authenticates cart and checkout; `adminAccessToken` authenticates product creation; `customProductId` must be used in the `POST /cart` body |
+| `GET /orders` | Complete `POST /checkout` first | Extract `latestOrderId` from checkout response and verify it exists in order history |
+
+Never leave business-critical dependency fields blank. If a setup request body has `"productId": ""`, `"productId": null`, or `"productId": "undefined"`, replace it with `"{{customProductId}}"` after the product creation/listing step. Do not call checkout until the authenticated user's cart has been populated by a successful `POST /cart`.
+
 ---
 
 ## 2. Environment Variables Reference
